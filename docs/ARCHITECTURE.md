@@ -308,6 +308,18 @@ Process command lines are **never collected** — they routinely contain credent
 access tokens. Machine serial numbers appear masked to the final four characters, so a
 report can be shared when asking for help.
 
+The HTML report leads with the measured outcome of the run, because that is the question
+the reader opened it with; the inventory, the per-action detail and the rollback record
+follow as the evidence behind it. The three space figures (measured during execution, volume
+free-space delta, prediction) are shown side by side and never reconciled into one number.
+
+Execution also reports itself as it goes. `Invoke-WaPlan` takes an optional `-OnProgress`
+sink and announces each step: the baseline measurement, each action as it starts and
+finishes, progress within a long deletion, and a heartbeat while a native command such as
+DISM is still running. The sink is presentation only - it cannot influence what runs, and a
+sink that throws is dropped in favour of a `Write-Progress` bar rather than stopping a
+change that is already under way. With no sink, the same steps are drawn as that bar.
+
 The HTML report is a single self-contained file with no external resources: no CDN, no
 fonts, no scripts fetched at view time. A report describing a specific machine should not
 phone anywhere when it is opened, and it has to work on a machine with no network.

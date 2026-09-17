@@ -246,6 +246,43 @@ Describe 'Full execute path end to end' -Tag 'Execution' {
         Remove-Item -LiteralPath $outcome.Rollback -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    It 'leads the report with what the run recovered, not with the machine inventory' {
+        $report = Invoke-WaInternal {
+            $session = New-WaSession -Mode 'Cleanup'
+            $session.MachineProfile = [pscustomobject]@{
+                Support = [pscustomobject]@{ SupportedForExecution = $true; Reasons = @() }
+                Identity = [pscustomobject]@{ MachineName = 'TEST' }
+                OperatingSystem = [pscustomobject]@{ ProductName = 'Windows 11 Pro'; DisplayVersion = '24H2'; FullBuild = '26100.0' }
+                Hardware = [pscustomobject]@{ Manufacturer = 'TEST' }
+                Processor = @(); Graphics = @(); Memory = $null
+                Storage = [pscustomobject]@{ Volumes = @(); PhysicalDisks = @(); BitLocker = @(); BitLockerNote = '' }
+                Pagefile = $null; Hibernation = $null; Power = $null; SystemProtection = $null
+                Update = $null; ComponentStore = $null; OptionalFeatures = @()
+                DeliveryOptimization = $null; Workloads = @(); Startup = @(); Processes = $null
+            }
+            $session.Verification = [pscustomobject]@{
+                ReportedBytesReclaimed = 8823250944
+                VolumeFreeSpaceDelta   = 20937965568
+                EstimatedBytes         = 35786780672
+                Succeeded = 23; Failed = 0; Skipped = 2
+                Metrics = @([pscustomobject]@{ Name = 'Free space on C:'; BeforeText = '147.07 GiB'; AfterText = '154.61 GiB'; Changed = $true })
+                Notes = @('Reported reclaimed space is the sum of what each action measured.')
+            }
+            New-WaHtmlReport -Session $session
+        }
+
+        $recovered = $report.IndexOf('What this run recovered')
+        $overview  = $report.IndexOf('Machine overview')
+        $recovered | Should -BeGreaterThan 0
+        $recovered | Should -BeLessThan $overview -Because 'the outcome is the headline, not a footnote'
+
+        # The three figures stay distinct, and the per-action detail is one click away.
+        $report | Should -Match '8\.22 GiB'
+        $report | Should -Match '19\.5 GiB'
+        $report | Should -Match '23 / 0 / 2'
+        $report | Should -Match 'href="#what-was-done"'
+    }
+
     It 'produces an HTML report containing no external resources' {
         $report = Invoke-WaInternal {
             param($CachePath)
@@ -345,5 +382,224 @@ Describe 'Reclaimed-space parsing' -Tag 'Execution' {
 
     It 'returns nothing when the tool reported nothing, rather than guessing' {
         Invoke-WaInternal { Get-WaReclaimedBytesFromOutput -Text 'Done.' } | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Execution progress' -Tag 'Execution' {
+
+    BeforeEach {
+        $script:sandbox = New-WaTestSandbox
+        $script:cachePath = Join-Path $script:sandbox 'cache'
+    }
+    AfterEach { Remove-WaTestSandbox -Path $script:sandbox }
+
+    It 'reports every phase of a simulated run, in order, with an action counter' {
+        $phases = Invoke-WaInternal {
+            param($CachePath)
+
+            $session = New-WaSession -Mode 'DryRun'
+            $session.MachineProfile = [pscustomobject]@{
+                Support = [pscustomobject]@{ SupportedForExecution = $true; Reasons = @() }
+                Hibernation = $null; Startup = @(); Storage = [pscustomobject]@{ Volumes = @() }
+            }
+
+            $candidate = Get-WaCacheRootCandidate -Session $session -Provider 'Test' -Key 'progress.phases' `
+                -Title 'Sandbox cache' -Category 'Test' -Path $CachePath -AgeDays 7 `
+                -Risk 'LOW' -Confidence 'HIGH' -Explanation 'Sandbox files.' -MinimumBytes 0
+            $recommendation = New-WaFileCleanupRecommendation -Session $session -Candidate $candidate
+            $plan = [pscustomobject]@{
+                Id = 'PLAN-PROGRESS'; SessionId = $session.Id; CreatedUtc = (Get-WaUtcTimestamp); Mode = 'DryRun'
+                Actions = @(New-WaPlannedAction -Recommendation $recommendation -Order 1)
+                Questions = @(); Summary = $null
+            }
+
+            $seen = New-Object 'System.Collections.Generic.List[object]'
+            [void](Invoke-WaPlan -Session $session -Plan $plan -OnProgress {
+                param($ProgressEvent)
+                $seen.Add($ProgressEvent)
+            })
+            $seen.ToArray()
+        } $script:cachePath
+
+        @($phases | ForEach-Object { $_.Phase }) | Should -Be @('Start', 'Action', 'ActionComplete', 'Complete')
+
+        $started = @($phases | Where-Object { $_.Phase -eq 'Action' })[0]
+        $started.Index | Should -Be 1
+        $started.Total | Should -Be 1
+        $started.Title | Should -Be 'Sandbox cache'
+
+        # The finished event carries what the results table will later show.
+        $finished = @($phases | Where-Object { $_.Phase -eq 'ActionComplete' })[0]
+        $finished.Status | Should -Be 'Simulated'
+        $finished.ActionId | Should -Be 'progress.phases'
+    }
+
+    It 'reports the slow steps of a real run, including progress within a deletion' {
+        $phases = Invoke-WaInternal {
+            param($CachePath)
+
+            $session = New-WaSession -Mode 'Cleanup'
+            $session.MachineProfile = [pscustomobject]@{
+                Support  = [pscustomobject]@{ SupportedForExecution = $true; Reasons = @() }
+                Hibernation = $null
+                Startup  = @()
+                Storage  = [pscustomobject]@{ Volumes = @(Get-WaVolumeFreeSpace | Select-Object -First 1) }
+                Identity = [pscustomobject]@{ MachineName = 'TEST'; UserSid = $null }
+                OperatingSystem = [pscustomobject]@{ FullBuild = '26100.0' }
+            }
+
+            $candidate = Get-WaCacheRootCandidate -Session $session -Provider 'Test' -Key 'progress.execute' `
+                -Title 'Sandbox cache' -Category 'Test' -Path $CachePath -AgeDays 7 `
+                -Risk 'LOW' -Confidence 'HIGH' -Explanation 'Sandbox files.' -MinimumBytes 0
+            $recommendation = New-WaFileCleanupRecommendation -Session $session -Candidate $candidate
+            $plan = [pscustomobject]@{
+                Id = 'PLAN-PROGRESS-RUN'; SessionId = $session.Id; CreatedUtc = (Get-WaUtcTimestamp); Mode = 'Cleanup'
+                Actions = @(New-WaPlannedAction -Recommendation $recommendation -Order 1)
+                Questions = @(); Summary = $null
+            }
+            $plan.Summary = Get-WaPlanSummary -Plan $plan
+            $session.Plan = $plan
+            [void](Grant-WaApproval -Session $session -Plan $plan -ActionId 'progress.execute' -Decision 'Approved' -Scope 'Batch')
+
+            $seen = New-Object 'System.Collections.Generic.List[object]'
+            [void](Invoke-WaPlan -Session $session -Plan $plan -OnProgress {
+                param($ProgressEvent)
+                $seen.Add($ProgressEvent)
+            })
+            if ($session.RollbackDirectory) {
+                Remove-Item -LiteralPath $session.RollbackDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $seen.ToArray()
+        } $script:cachePath
+
+        $names = @($phases | ForEach-Object { $_.Phase })
+
+        # Measuring the before and after state walks the filesystem: slow enough to announce.
+        $names | Should -Contain 'Baseline'
+        $names | Should -Contain 'Verify'
+        $names | Should -Contain 'Operation'
+        $names[-1] | Should -Be 'Complete'
+
+        # A sub-step inherits the action it belongs to, so it is never reported orphaned.
+        $operation = @($phases | Where-Object { $_.Phase -eq 'Operation' })[0]
+        $operation.Title | Should -Be 'Sandbox cache'
+        $operation.Message | Should -Not -BeNullOrEmpty
+    }
+
+    It 'finishes the work when the display fails' {
+        $results = Invoke-WaInternal {
+            param($CachePath)
+
+            $session = New-WaSession -Mode 'Cleanup'
+            $session.MachineProfile = [pscustomobject]@{
+                Support  = [pscustomobject]@{ SupportedForExecution = $true; Reasons = @() }
+                Hibernation = $null
+                Startup  = @()
+                Storage  = [pscustomobject]@{ Volumes = @(Get-WaVolumeFreeSpace | Select-Object -First 1) }
+                Identity = [pscustomobject]@{ MachineName = 'TEST'; UserSid = $null }
+                OperatingSystem = [pscustomobject]@{ FullBuild = '26100.0' }
+            }
+
+            $candidate = Get-WaCacheRootCandidate -Session $session -Provider 'Test' -Key 'progress.broken' `
+                -Title 'Sandbox cache' -Category 'Test' -Path $CachePath -AgeDays 7 `
+                -Risk 'LOW' -Confidence 'HIGH' -Explanation 'Sandbox files.' -MinimumBytes 0
+            $recommendation = New-WaFileCleanupRecommendation -Session $session -Candidate $candidate
+            $plan = [pscustomobject]@{
+                Id = 'PLAN-PROGRESS-BROKEN'; SessionId = $session.Id; CreatedUtc = (Get-WaUtcTimestamp); Mode = 'Cleanup'
+                Actions = @(New-WaPlannedAction -Recommendation $recommendation -Order 1)
+                Questions = @(); Summary = $null
+            }
+            $plan.Summary = Get-WaPlanSummary -Plan $plan
+            $session.Plan = $plan
+            [void](Grant-WaApproval -Session $session -Plan $plan -ActionId 'progress.broken' -Decision 'Approved' -Scope 'Batch')
+
+            $outcome = Invoke-WaPlan -Session $session -Plan $plan -OnProgress {
+                param($ProgressEvent)
+                throw 'the display is broken'
+            }
+            if ($session.RollbackDirectory) {
+                Remove-Item -LiteralPath $session.RollbackDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $outcome
+        } $script:cachePath
+
+        @($results | Where-Object { $_.ActionId -eq 'progress.broken' })[0].Status | Should -Be 'Succeeded'
+        @(Get-ChildItem -LiteralPath $script:cachePath -File | Where-Object { $_.Name -like 'old-*' }).Count |
+            Should -Be 0 -Because 'a broken display must not stop work that is under way'
+    }
+
+    It 'reports nothing, and throws nothing, when no run is in progress' {
+        { Invoke-WaInternal { Write-WaExecutionProgress -Phase 'Action' -Message 'nobody is listening' } } |
+            Should -Not -Throw
+    }
+
+    It 'renders a finished action as one line carrying its title, size and outcome' {
+        # 6>&1 redirects the information stream, which is where Write-Host writes.
+        $line = Invoke-WaInternal {
+            $progressEvent = [pscustomobject]@{
+                Phase = 'ActionComplete'; Index = 2; Total = 9; PercentComplete = 22
+                ActionId = 'x'; Title = 'Clear user temp files'; Provider = 'Windows.Temp'
+                Status = 'Succeeded'; Message = ''; BytesReclaimed = 1258291200; ElapsedMs = 12400
+            }
+            (Show-WaExecutionProgress -ProgressEvent $progressEvent 6>&1 | Out-String)
+        }
+
+        $line | Should -Match '\[2/9\]'
+        $line | Should -Match 'Clear user temp files'
+        $line | Should -Match 'done'
+        $line | Should -Match '12\.4s'
+        $line | Should -Match 'GiB'
+    }
+
+    It 'rewrites one transient line rather than scrolling, when the console allows it' {
+        $output = Invoke-WaInternal {
+            $progressEvent = [pscustomobject]@{
+                Phase = 'Operation'; Index = 1; Total = 3; PercentComplete = 33
+                ActionId = 'x'; Title = 'Clear user temp files'; Provider = 'Windows.Temp'
+                Status = ''; Message = 'deleting file 1,200 of 4,312'; BytesReclaimed = $null; ElapsedMs = 0
+            }
+            (Show-WaExecutionProgress -ProgressEvent $progressEvent -InPlace 6>&1 | Out-String)
+        }
+
+        $output | Should -Match 'deleting file 1,200 of 4,312'
+        $output | Should -Match "`r" -Because 'the line is rewritten in place rather than appended'
+    }
+}
+
+Describe 'Native command heartbeat' -Tag 'Execution' {
+
+    # ping.exe is resolved directly rather than through Get-WaSystemExecutable: it is not in
+    # the catalog's allow-list, and should not be. It is used here only as a process that
+    # reliably takes a few seconds.
+
+    It 'reports that a slow command is still running, without changing its outcome' {
+        $outcome = Invoke-WaInternal {
+            $beats = New-Object 'System.Collections.Generic.List[object]'
+            $result = Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') `
+                -Arguments @('-n', '4', '127.0.0.1') -TimeoutSeconds 60 -HeartbeatSeconds 1 -OnHeartbeat {
+                    param($Elapsed)
+                    $beats.Add($Elapsed)
+                }
+            [pscustomobject]@{ ExitCode = $result.ExitCode; Beats = $beats.Count }
+        }
+
+        $outcome.ExitCode | Should -Be 0
+        $outcome.Beats | Should -BeGreaterThan 1 -Because 'a command that runs for seconds must say so while it runs'
+    }
+
+    It 'still enforces the timeout while a heartbeat is watching' {
+        { Invoke-WaInternal {
+            Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') `
+                -Arguments @('-n', '30', '127.0.0.1') -TimeoutSeconds 2 -HeartbeatSeconds 1 -OnHeartbeat { param($Elapsed) }
+        } } | Should -Throw -ExpectedMessage '*timeout*'
+    }
+
+    It 'does not let a failing heartbeat affect the command' {
+        Invoke-WaInternal {
+            $result = Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') `
+                -Arguments @('-n', '3', '127.0.0.1') -TimeoutSeconds 60 -HeartbeatSeconds 1 `
+                -OnHeartbeat { param($Elapsed) throw 'the display is broken' }
+            $result.ExitCode
+        } | Should -Be 0
     }
 }

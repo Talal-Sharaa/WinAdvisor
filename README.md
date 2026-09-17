@@ -215,6 +215,23 @@ The plan is presented in full before anything runs:
 HIGH-risk items are never included in a batch. They require typing `YES` in full, per item.
 MANUAL-ONLY items cannot be approved at all.
 
+### While it runs
+
+Execution is the slow part: a cache can hold tens of thousands of files, a servicing command
+can run for minutes, and measuring the before and after state walks the filesystem. Every
+step says what it is doing, so a long wait is never mistaken for a hang.
+
+```
+  measuring free space and target sizes before the first change
+  Executing 25 approved action(s).
+  [ 1/25] Windows temporary files                    1.42 GiB  done    12.4s
+  [ 2/25] Component store cleanup - Dism.exe has been running for 95s ...
+```
+
+The last line is rewritten in place while the action runs; each finished action leaves one
+line behind. A host that cannot rewrite a line, or a non-interactive run, prints an
+occasional plain progress line instead.
+
 ---
 
 ## Providers
@@ -375,6 +392,11 @@ Data/Logs/<SessionId>.jsonl       one JSON object per line
 Data/Sessions/<SessionId>.json    session summary
 ```
 
+The report opens with what the run actually recovered: measured during execution, the
+free-space change across volumes, and what was predicted beforehand, kept as three separate
+figures rather than reconciled into one. The machine inventory and the per-action detail
+follow it as the evidence behind that headline.
+
 The HTML report has **no external resources** — no CDN, no fonts, no scripts fetched at view
 time. A report describing your machine should not phone anywhere when you open it, and it
 has to work offline. It adapts to light and dark colour schemes.
@@ -446,12 +468,13 @@ pwsh -NoProfile -File Tests/Run-Tests.ps1       # Pester 5 suite
 pwsh -NoProfile -File Tests/Run-Tests.ps1 -Tag Safety
 ```
 
-174 tests covering path safety and traversal, protected paths, services, startup items and
+184 tests covering path safety and traversal, protected paths, services, startup items and
 file types, risk and confidence vocabularies, operation policy floors, read-only guarantees,
 approval enforcement and tampering, MANUAL-ONLY refusal at four layers, command catalog
 integrity and argument injection, configuration validation, provider contract and failure
-isolation, real file deletion in a sandbox, manifest re-validation, idempotency, and
-rollback capture and restoration including crafted-record refusal.
+isolation, real file deletion in a sandbox, manifest re-validation, idempotency, execution
+progress reporting and its inability to affect what runs, and rollback capture and
+restoration including crafted-record refusal.
 
 Pester 5 is required and is **not** installed automatically — a project that tells you to
 distrust silent downloads should not perform one.

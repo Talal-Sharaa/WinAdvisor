@@ -627,6 +627,226 @@ function Invoke-WaPerItemApproval {
     return $approvedAny
 }
 
+# ---------------------------------------------------------------------------------------
+# Execution progress
+#
+# Invoke-WaPlan reports every step it takes; this is the only code that decides how those
+# steps look. Two kinds of line are printed:
+#
+#   * a transient line, rewritten in place, showing what is happening right now
+#   * one permanent line per action, left on screen when it finishes
+#
+# Where the console cannot rewrite a line (output redirected, a host without a raw UI, a
+# non-interactive run) the transient line becomes an occasional plain line instead, so a
+# transcript still shows progress without thousands of repeats.
+# ---------------------------------------------------------------------------------------
+
+# Width of the transient line currently on screen, or 0 when there is none.
+$script:WaTransientWidth = 0
+
+# How often a host that cannot rewrite lines is allowed to print a progress line.
+$script:WaPlainProgressIntervalMs = 15000
+$script:WaPlainProgressClock = $null
+
+# Whether the current run may rewrite the transient line. Held here rather than captured in
+# the sink itself: GetNewClosure would rebind the scriptblock to a new dynamic module, where
+# none of the functions below are visible.
+$script:WaProgressInPlace = $false
+
+function Test-WaTransientConsole {
+    <#
+    .SYNOPSIS
+        True when the console can overwrite the current line in place.
+    #>
+    [CmdletBinding()]
+    param()
+    try {
+        if ([Console]::IsOutputRedirected) { return $false }
+        if ($null -eq $Host.UI.RawUI) { return $false }
+        return ($Host.UI.RawUI.WindowSize.Width -gt 20)
+    } catch {
+        return $false
+    }
+}
+
+function Get-WaConsoleWidth {
+    <#
+    .SYNOPSIS
+        Usable width for a transient line, with a safe default for hosts that have none.
+    #>
+    [CmdletBinding()]
+    param()
+    try { return [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width - 1) } catch { return 78 }
+}
+
+function Write-WaTransientLine {
+    <#
+    .SYNOPSIS
+        Draws the "happening right now" line, replacing whatever was there before.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $width = Get-WaConsoleWidth
+    $line = if ($Text.Length -gt $width) { $Text.Substring(0, $width - 3) + '...' } else { $Text }
+    Write-Host ("`r" + $line.PadRight($width)) -NoNewline -ForegroundColor DarkGray
+    $script:WaTransientWidth = $width
+}
+
+function Clear-WaTransientLine {
+    <#
+    .SYNOPSIS
+        Removes the transient line so the next permanent line starts on clean ground.
+    #>
+    [CmdletBinding()]
+    param()
+    if ($script:WaTransientWidth -le 0) { return }
+    Write-Host ("`r" + (' ' * $script:WaTransientWidth) + "`r") -NoNewline
+    $script:WaTransientWidth = 0
+}
+
+function Get-WaProgressStatusWord {
+    <#
+    .SYNOPSIS
+        The short word and colour shown for a finished action.
+    #>
+    [CmdletBinding()]
+    param([string]$Status)
+
+    switch ($Status) {
+        'Succeeded'          { return [pscustomobject]@{ Word = 'done';    Colour = 'Green' } }
+        'PartiallySucceeded' { return [pscustomobject]@{ Word = 'partial'; Colour = 'Yellow' } }
+        'Failed'             { return [pscustomobject]@{ Word = 'failed';  Colour = 'Red' } }
+        'Blocked'            { return [pscustomobject]@{ Word = 'blocked'; Colour = 'Red' } }
+        'Skipped'            { return [pscustomobject]@{ Word = 'skipped'; Colour = 'DarkGray' } }
+        'Simulated'          { return [pscustomobject]@{ Word = 'dry run'; Colour = 'Cyan' } }
+        default              { return [pscustomobject]@{ Word = ([string]$Status).ToLowerInvariant(); Colour = 'Gray' } }
+    }
+}
+
+function Show-WaLiveActivity {
+    <#
+    .SYNOPSIS
+        Shows what is happening right now, in place where the host allows it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Text, [switch]$InPlace)
+
+    if ($InPlace) {
+        Write-WaTransientLine -Text $Text
+        return
+    }
+
+    # Nothing can be rewritten here, so print rarely: often enough to show the run is
+    # alive, not so often that a transcript becomes unreadable.
+    if ($null -eq $script:WaPlainProgressClock) {
+        $script:WaPlainProgressClock = [Diagnostics.Stopwatch]::StartNew()
+    } elseif ($script:WaPlainProgressClock.ElapsedMilliseconds -lt $script:WaPlainProgressIntervalMs) {
+        return
+    } else {
+        $script:WaPlainProgressClock.Restart()
+    }
+    Write-Host $Text -ForegroundColor DarkGray
+}
+
+function Show-WaExecutionProgress {
+    <#
+    .SYNOPSIS
+        Renders one execution progress event.
+
+    .DESCRIPTION
+        Called by Invoke-WaPlan through the sink Get-WaExecutionProgressSink builds.
+        Display only: it is told what happened and has no say in what happens next.
+
+    .PARAMETER InPlace
+        Rewrite the current activity on one line. Off for hosts that cannot do it, which
+        get an occasional plain line instead.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$ProgressEvent, [switch]$InPlace)
+
+    $index = [int]$ProgressEvent.Index
+    $total = [int]$ProgressEvent.Total
+    $digits = [Math]::Max(1, ([string]$total).Length)
+    $counter = if ($total -gt 0) { '[{0}/{1}] ' -f ([string]$index).PadLeft($digits), $total } else { '' }
+
+    switch ($ProgressEvent.Phase) {
+
+        'Start' {
+            Clear-WaTransientLine
+            Write-Host ('  {0}' -f $ProgressEvent.Message) -ForegroundColor Cyan
+        }
+
+        'Baseline' {
+            Show-WaLiveActivity -Text ('  {0}' -f $ProgressEvent.Message) -InPlace:$InPlace
+        }
+
+        'Verify' {
+            Show-WaLiveActivity -Text ('  {0}' -f $ProgressEvent.Message) -InPlace:$InPlace
+        }
+
+        'RestorePoint' {
+            Clear-WaTransientLine
+            Write-Host ('  {0}. This can take a minute.' -f $ProgressEvent.Message) -ForegroundColor Yellow
+        }
+
+        'Action' {
+            $text = '  {0}{1}' -f $counter, $ProgressEvent.Title
+            if ($ProgressEvent.Message) { $text = '{0} - {1}' -f $text, $ProgressEvent.Message }
+            Show-WaLiveActivity -Text $text -InPlace:$InPlace
+        }
+
+        'Operation' {
+            $text = '  {0}{1} - {2}' -f $counter, $ProgressEvent.Title, $ProgressEvent.Message
+            Show-WaLiveActivity -Text $text -InPlace:$InPlace
+        }
+
+        'ActionComplete' {
+            Clear-WaTransientLine
+            $status = Get-WaProgressStatusWord -Status $ProgressEvent.Status
+
+            # Titles are truncated to keep the columns aligned, as in the plan listing.
+            $title = [string]$ProgressEvent.Title
+            if ($title.Length -gt 46) { $title = $title.Substring(0, 43) + '...' }
+
+            $size = if ($null -eq $ProgressEvent.BytesReclaimed) { '' } else { Format-WaBytes $ProgressEvent.BytesReclaimed }
+            $elapsed = if ($ProgressEvent.ElapsedMs -ge 1000) { '{0:N1}s' -f ($ProgressEvent.ElapsedMs / 1000) } else { '' }
+
+            Write-Host ('  {0}' -f $counter) -NoNewline -ForegroundColor DarkGray
+            Write-Host ($title.PadRight(46)) -NoNewline -ForegroundColor Gray
+            Write-Host ('{0,11}  ' -f $size) -NoNewline -ForegroundColor Gray
+            Write-Host ('{0,-8}' -f $status.Word) -NoNewline -ForegroundColor $status.Colour
+            Write-Host ('{0}' -f $elapsed) -ForegroundColor DarkGray
+        }
+
+        'Complete' {
+            Clear-WaTransientLine
+        }
+    }
+}
+
+function Get-WaExecutionProgressSink {
+    <#
+    .SYNOPSIS
+        Builds the callback Invoke-WaPlan uses to report progress to the console.
+
+    .EXAMPLE
+        $sink = Get-WaExecutionProgressSink -Session $session
+        $results = Invoke-WaPlan -Session $session -Plan $plan -OnProgress $sink
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session)
+
+    $script:WaProgressInPlace = (-not $Session.NonInteractive) -and (Test-WaTransientConsole)
+    $script:WaTransientWidth = 0
+    $script:WaPlainProgressClock = $null
+
+    return {
+        param($ProgressEvent)
+        Show-WaExecutionProgress -ProgressEvent $ProgressEvent -InPlace:$script:WaProgressInPlace
+    }
+}
+
 function Show-WaResults {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Session, [object[]]$Results = @())

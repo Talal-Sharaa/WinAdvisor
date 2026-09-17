@@ -26,8 +26,8 @@ Verified by execution on the machine above, on both PowerShell versions.
 **Static analysis.** All 57 PowerShell files parse cleanly on both versions
 (`Tests/Test-Syntax.ps1`).
 
-**Test suite.** 174 Pester tests, all passing on **both** Windows PowerShell 5.1 (74s) and
-PowerShell 7.6.6 (29s):
+**Test suite.** 184 Pester tests, all passing on **both** Windows PowerShell 5.1 (33s) and
+PowerShell 7.6.6 (35s):
 
 | Area | Coverage |
 |---|---|
@@ -214,7 +214,7 @@ have been wrong four times over.
 
 ```powershell
 pwsh -NoProfile -File Tests/Test-Syntax.ps1            # 57 files parse
-pwsh -NoProfile -File Tests/Run-Tests.ps1              # 174 tests
+pwsh -NoProfile -File Tests/Run-Tests.ps1              # 184 tests
 powershell -NoProfile -File Tests/Run-Tests.ps1        # same, on 5.1
 
 .\WinAdvisor.ps1 -Mode ViewSpecs -NonInteractive       # read-only inventory

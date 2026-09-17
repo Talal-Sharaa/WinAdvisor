@@ -168,6 +168,12 @@ function Invoke-WaNativeProcess {
           * Output is captured asynchronously so a chatty tool cannot deadlock the pipe.
           * NeverKill is used for servicing operations (DISM) where terminating the
             process mid-flight can leave the component store needing repair.
+
+    .PARAMETER OnHeartbeat
+        Called with the elapsed TimeSpan roughly every HeartbeatSeconds while the process is
+        still running. Presentation only: a command that produces no output for minutes is
+        otherwise indistinguishable from a hang. Without it the wait is a single blocking
+        call, exactly as before.
     #>
     [CmdletBinding()]
     param(
@@ -175,7 +181,9 @@ function Invoke-WaNativeProcess {
         [string[]]$Arguments = @(),
         [int]$TimeoutSeconds = 120,
         [switch]$NeverKill,
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+        [scriptblock]$OnHeartbeat,
+        [ValidateRange(1, 3600)][int]$HeartbeatSeconds = 5
     )
 
     if (-not [IO.Path]::IsPathRooted($FilePath)) { throw "Native executable path must be rooted: $FilePath" }
@@ -209,7 +217,22 @@ function Invoke-WaNativeProcess {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
 
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        # The timeout is the same whether or not anyone is watching: with a heartbeat the
+        # single wait becomes a series of shorter ones that add up to it.
+        $timeoutMs = [long]$TimeoutSeconds * 1000
+        $exited = $false
+        while (-not $exited) {
+            $remainingMs = $timeoutMs - $stopwatch.ElapsedMilliseconds
+            if ($remainingMs -le 0) { break }
+            $sliceMs = if ($OnHeartbeat) { [Math]::Min([long]$HeartbeatSeconds * 1000, $remainingMs) } else { $remainingMs }
+            $exited = $process.WaitForExit([int][Math]::Min($sliceMs, [int]::MaxValue))
+            if (-not $exited -and $OnHeartbeat) {
+                # A reporting fault must not change how the process itself is treated.
+                try { [void](& $OnHeartbeat $stopwatch.Elapsed) } catch { }
+            }
+        }
+
+        if (-not $exited) {
             if ($NeverKill) {
                 throw ("'{0}' is still running after {1}s and was deliberately not terminated. Terminating a servicing operation can corrupt the component store; let it finish and inspect its log." -f [IO.Path]::GetFileName($FilePath), $TimeoutSeconds)
             }

@@ -20,6 +20,165 @@
     separate code path, the same one with the final step withheld.
 #>
 
+# ---------------------------------------------------------------------------------------
+# Progress reporting
+#
+# Execution is the slow phase. A manifest can hold tens of thousands of files, a servicing
+# command can run for minutes, and measuring the before and after state walks directories.
+# On a console, silence is indistinguishable from a hang, so every step announces itself.
+#
+# The reporter is module-scoped state that exists only for the duration of one Invoke-WaPlan
+# call. It is held here rather than passed down so that an operation handler deep in the
+# dispatch chain can say what it is doing without adding a parameter to every signature in
+# between. It is presentation only, and deliberately powerless:
+#
+#   * nothing in this file reads it to decide anything
+#   * a sink that throws is dropped and the run continues on the progress bar, because a
+#     broken display must never abandon a change half-finished
+#   * a run without a sink behaves exactly as before, save for a Write-Progress bar
+# ---------------------------------------------------------------------------------------
+
+$script:WaExecutionProgress = $null
+
+# Updates from inside a loop can arrive faster than any console can render them. Throttled
+# events closer together than this are dropped rather than queued.
+$script:WaProgressThrottleMs = 400
+
+function Start-WaExecutionProgress {
+    <#
+    .SYNOPSIS
+        Opens the progress channel for one plan.
+
+    .PARAMETER OnProgress
+        Presentation callback, invoked once per step with a progress event. When it is
+        absent the steps are drawn as a Write-Progress bar instead; when it is present the
+        caller owns the display entirely, because two renderers on one console overwrite
+        each other.
+    #>
+    [CmdletBinding()]
+    param([int]$Total = 0, [scriptblock]$OnProgress)
+
+    $script:WaExecutionProgress = [pscustomobject]@{
+        Total      = [Math]::Max(0, $Total)
+        Index      = 0
+        Sink       = $OnProgress
+        SinkError  = ''
+        Title      = ''
+        Provider   = ''
+        Activity   = 'WinAdvisor execution'
+        LastUpdate = [Diagnostics.Stopwatch]::StartNew()
+    }
+}
+
+function Stop-WaExecutionProgress {
+    <#
+    .SYNOPSIS
+        Closes the progress channel and clears any bar left on screen.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $reporter = $script:WaExecutionProgress
+    if ($null -eq $reporter) { return }
+    if ($null -eq $reporter.Sink) { Write-Progress -Activity $reporter.Activity -Completed }
+    $script:WaExecutionProgress = $null
+}
+
+function Write-WaExecutionProgress {
+    <#
+    .SYNOPSIS
+        Reports one step of execution to whoever is listening.
+
+    .DESCRIPTION
+        Safe to call from anywhere on the execution path, including when no run is in
+        progress, in which case it does nothing at all.
+
+    .PARAMETER Throttle
+        For updates emitted from inside a loop. The event is dropped if the previous one is
+        recent enough that nobody could have read it yet.
+
+    .EXAMPLE
+        Write-WaExecutionProgress -Phase 'Operation' -Message 'deleting 1,200 of 4,312 file(s)' -Throttle
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Start', 'Baseline', 'RestorePoint', 'Action', 'Operation', 'ActionComplete', 'Verify', 'Complete')]
+        [string]$Phase,
+        [string]$Message = '',
+        [int]$Index = -1,
+        [string]$ActionId = '',
+        [string]$Title = '',
+        [string]$Provider = '',
+        [string]$Status = '',
+        $BytesReclaimed = $null,
+        [int]$ElapsedMs = 0,
+        [switch]$Throttle
+    )
+
+    $reporter = $script:WaExecutionProgress
+    if ($null -eq $reporter) { return }
+
+    if ($Throttle -and $reporter.LastUpdate.ElapsedMilliseconds -lt $script:WaProgressThrottleMs) { return }
+    $reporter.LastUpdate.Restart()
+
+    if ($Index -ge 0) { $reporter.Index = $Index }
+
+    # An operation reports what it is doing, not which action it belongs to, so the action
+    # last announced stays attached to everything reported under it.
+    if ($Title)    { $reporter.Title = $Title }       else { $Title = $reporter.Title }
+    if ($Provider) { $reporter.Provider = $Provider } else { $Provider = $reporter.Provider }
+
+    $percent = 0
+    if ($reporter.Total -gt 0) {
+        $percent = [int][Math]::Min(99, ($reporter.Index / $reporter.Total) * 100)
+    }
+
+    $progressEvent = [pscustomobject][ordered]@{
+        PSTypeName      = 'WinAdvisor.ExecutionProgress'
+        Phase           = $Phase
+        Index           = $reporter.Index
+        Total           = $reporter.Total
+        PercentComplete = $percent
+        ActionId        = $ActionId
+        Title           = $Title
+        Provider        = $Provider
+        Status          = $Status
+        Message         = $Message
+        BytesReclaimed  = $BytesReclaimed
+        ElapsedMs       = $ElapsedMs
+    }
+
+    if ($null -ne $reporter.Sink) {
+        # A display fault must not interrupt a machine change that is already under way, but
+        # it must not silently turn into no progress at all either: the sink is dropped and
+        # the rest of the run falls back to the progress bar below.
+        try {
+            [void](& $reporter.Sink $progressEvent)
+            return
+        } catch {
+            $reporter.Sink = $null
+            $reporter.SinkError = $_.Exception.Message
+        }
+    }
+
+    $text = if ($Message) { $Message } elseif ($Title) { $Title } else { $Phase }
+    Write-Progress -Activity $reporter.Activity -Status $text -PercentComplete $percent
+}
+
+function Get-WaOperationLabel {
+    <#
+    .SYNOPSIS
+        A short human phrase for what an operation is about to do. Progress only.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Operation)
+
+    $description = [string](Get-WaProperty -Object $Operation -Name 'Description')
+    if ($description) { return $description }
+    return ('performing {0}' -f $Operation.Kind)
+}
+
 function Invoke-WaPlan {
     <#
     .SYNOPSIS
@@ -30,6 +189,11 @@ function Invoke-WaPlan {
         continues; the run only stops early if continuing could leave the machine in an
         inconsistent state.
 
+    .PARAMETER OnProgress
+        Optional presentation callback, invoked with a progress event as each step starts
+        and finishes. It cannot influence what runs; see the progress notes at the top of
+        this file.
+
     .EXAMPLE
         $results = Invoke-WaPlan -Session $session -Plan $plan
         $results | Format-Table ActionId, Status, BytesReclaimed
@@ -37,19 +201,40 @@ function Invoke-WaPlan {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]$Session,
-        [Parameter(Mandatory)]$Plan
+        [Parameter(Mandatory)]$Plan,
+        [scriptblock]$OnProgress
     )
 
     $results = New-Object 'System.Collections.Generic.List[object]'
+    $orderedActions = @($Plan.Actions | Sort-Object Order)
+
+    Start-WaExecutionProgress -Total $orderedActions.Count -OnProgress $OnProgress
+    try {
 
     if ($Session.ReadOnly) {
         Write-WaLog -Session $Session -Level 'Info' -Category 'Execution' -Message (
             'Simulating plan {0} in read-only {1} mode. Nothing will be changed.' -f $Plan.Id, $Session.Mode
         )
-        foreach ($action in @($Plan.Actions | Sort-Object Order)) {
-            $results.Add((Get-WaSimulatedResult -Session $Session -Action $action))
+        Write-WaExecutionProgress -Phase 'Start' -Message (
+            'Simulating {0} action(s). Nothing will be changed.' -f $orderedActions.Count)
+
+        # A simulation re-validates every file manifest, which on a large cache is slow
+        # enough to need reporting even though nothing is being changed.
+        $index = 0
+        foreach ($action in $orderedActions) {
+            $index++
+            $recommendation = $action.Recommendation
+            Write-WaExecutionProgress -Phase 'Action' -Index $index -ActionId $action.Id `
+                -Title $recommendation.Title -Provider $recommendation.Provider -Message 'checking what would happen'
+
+            $simulated = Get-WaSimulatedResult -Session $Session -Action $action
+            $results.Add($simulated)
+
+            Write-WaExecutionProgress -Phase 'ActionComplete' -Index $index -ActionId $action.Id `
+                -Title $recommendation.Title -Provider $recommendation.Provider -Status $simulated.Status
         }
         $Session.Results = $results.ToArray()
+        Write-WaExecutionProgress -Phase 'Complete' -Index $orderedActions.Count -Message 'Dry run complete.'
         return $results.ToArray()
     }
 
@@ -60,6 +245,10 @@ function Invoke-WaPlan {
     }
 
     [void](Initialize-WaRollbackSession -Session $Session)
+
+    # Measuring the starting point walks every cleanup root the plan targets, so it can take
+    # noticeably longer than the first action itself. Say so before it starts.
+    Write-WaExecutionProgress -Phase 'Baseline' -Message 'measuring free space and target sizes before the first change'
     $baseline = Get-WaBaseline -Session $Session -Plan $Plan
     $Session.Baseline = $baseline
 
@@ -67,37 +256,68 @@ function Invoke-WaPlan {
     Write-WaLog -Session $Session -Level 'Info' -Category 'Execution' -Message (
         'Executing {0} approved action(s) of {1} in plan {2}.' -f $approvedActions.Count, @($Plan.Actions).Count, $Plan.Id
     )
+    Write-WaExecutionProgress -Phase 'Start' -Message $(
+        if ($approvedActions.Count -eq $orderedActions.Count) {
+            'Executing {0} approved action(s).' -f $approvedActions.Count
+        } else {
+            'Executing {0} approved action(s) of {1}.' -f $approvedActions.Count, $orderedActions.Count
+        })
 
     # A restore point is attempted once, before the first HIGH-risk change, if configured.
     $hasHighRisk = @($approvedActions | Where-Object { $_.Recommendation.Risk -eq 'HIGH' }).Count -gt 0
     if ($hasHighRisk -and $Session.Config.CreateRestorePointBeforeHighRisk) {
+        Write-WaExecutionProgress -Phase 'RestorePoint' -Message 'creating a system restore point before the first HIGH risk change'
         $results.Add((Invoke-WaRestorePointCreation -Session $Session))
     }
 
-    foreach ($action in @($Plan.Actions | Sort-Object Order)) {
+    $index = 0
+    foreach ($action in $orderedActions) {
+        $index++
         $recommendation = $action.Recommendation
+        Write-WaExecutionProgress -Phase 'Action' -Index $index -ActionId $action.Id `
+            -Title $recommendation.Title -Provider $recommendation.Provider
 
         if (-not (Test-WaExecutableRecommendation -Recommendation $recommendation)) {
             $results.Add((New-WaExecutionResult -ActionId $action.Id -Provider $recommendation.Provider -Status 'Skipped' `
                 -Summary 'Manual review only. WinAdvisor performs no action on this item.'))
+            Write-WaExecutionProgress -Phase 'ActionComplete' -Index $index -ActionId $action.Id `
+                -Title $recommendation.Title -Provider $recommendation.Provider -Status 'Skipped' -Message 'manual review only'
             continue
         }
         if (-not (Test-WaApproval -Action $action)) {
             $results.Add((New-WaExecutionResult -ActionId $action.Id -Provider $recommendation.Provider -Status 'Skipped' `
                 -Summary 'Not approved, or the approval no longer matches this action.'))
+            Write-WaExecutionProgress -Phase 'ActionComplete' -Index $index -ActionId $action.Id `
+                -Title $recommendation.Title -Provider $recommendation.Provider -Status 'Skipped' -Message 'not approved'
             continue
         }
+
+        # Logged as well as reported, so a run that is interrupted still says where it was.
+        Write-WaLog -Session $Session -Level 'Info' -Category 'Execution' -Message (
+            'Starting action {0} of {1}: {2} ({3}).' -f $index, $orderedActions.Count, $recommendation.Title, $action.Id
+        )
 
         $result = Invoke-WaPlannedAction -Session $Session -Action $action
         $results.Add($result)
         $action.Status = $result.Status
+
+        Write-WaExecutionProgress -Phase 'ActionComplete' -Index $index -ActionId $action.Id `
+            -Title $recommendation.Title -Provider $recommendation.Provider -Status $result.Status `
+            -BytesReclaimed $result.BytesReclaimed -ElapsedMs ([int](Get-WaProperty -Object $result -Name 'DurationMs'))
     }
 
     $Session.Results = $results.ToArray()
     [void](Save-WaRollbackActions -Session $Session)
+
+    Write-WaExecutionProgress -Phase 'Verify' -Index $orderedActions.Count -Message 'measuring what actually changed'
     $Session.Verification = Compare-WaBaseline -Session $Session -Baseline $baseline -Results $results.ToArray()
 
+    Write-WaExecutionProgress -Phase 'Complete' -Index $orderedActions.Count -Message 'execution complete'
     return $results.ToArray()
+
+    } finally {
+        Stop-WaExecutionProgress
+    }
 }
 
 function Get-WaSimulatedResult {
@@ -186,6 +406,9 @@ function Invoke-WaPlannedAction {
     }
 
     foreach ($operation in $recommendation.Operations) {
+        Write-WaExecutionProgress -Phase 'Operation' -ActionId $Action.Id -Title $recommendation.Title `
+            -Provider $recommendation.Provider -Message (Get-WaOperationLabel -Operation $operation)
+
         if (-not (Test-WaOperationPrivilege -Session $Session -Operation $operation)) {
             $reason = Get-WaElevationReason -Recommendation $recommendation
             $messages.Add("Blocked: $reason Restart WinAdvisor as administrator to perform it.")
@@ -347,11 +570,16 @@ function Invoke-WaFileDeleteOperation {
 
     [void](Assert-WaMutationAllowed -Session $Session -Operation 'file deletion')
 
+    # Re-validating a large manifest is itself slow, so it is announced before it starts.
+    Write-WaExecutionProgress -Phase 'Operation' -ActionId $Action.Id `
+        -Message ('re-checking {0:N0} reviewed file(s)' -f @($Operation.Parameters['Files']).Count)
+
     $preview = Get-WaFileDeletePreview -Session $Session -Action $Action -Operation $Operation
     $messages = New-Object 'System.Collections.Generic.List[string]'
     $deletedBytes = [long]0
     $deletedCount = 0
     $failedCount = 0
+    $processedCount = 0
 
     foreach ($file in $preview.Eligible) {
         $path = [string]$file.Path
@@ -364,6 +592,13 @@ function Invoke-WaFileDeleteOperation {
             # In use, denied, or removed by something else in the meantime: all normal.
             $failedCount++
         }
+
+        # Throttled: a manifest of tens of thousands of files would otherwise spend more
+        # time reporting than deleting.
+        $processedCount++
+        Write-WaExecutionProgress -Phase 'Operation' -ActionId $Action.Id -Throttle `
+            -Message ('deleting file {0:N0} of {1:N0}, {2} so far' -f
+                $processedCount, $preview.EligibleCount, (Format-WaBytes $deletedBytes))
     }
 
     $messages.Add(('Deleted {0} file(s) totalling {1} under {2}.' -f $deletedCount, (Format-WaBytes $deletedBytes), $preview.Root))
@@ -438,8 +673,24 @@ function Invoke-WaNativeCommandOperation {
         $rollbackId = $record.Id
     }
 
+    # Servicing commands routinely run for minutes with nothing on stdout. The heartbeat is
+    # the only sign the machine is still working rather than stuck.
+    # Not GetNewClosure: that would rebind the scriptblock to a new dynamic module where
+    # Write-WaExecutionProgress does not exist. A plain scriptblock keeps this module, and
+    # reads $actionId and $resolved from this scope, which is still on the stack while the
+    # process it is reporting on runs.
+    $actionId = [string]$Action.Id
+    $heartbeat = {
+        param($Elapsed)
+        Write-WaExecutionProgress -Phase 'Operation' -ActionId $actionId `
+            -Message ('{0} has been running for {1}s. It is still working; do not interrupt it.' -f
+                [IO.Path]::GetFileName($resolved.FilePath), [int]$Elapsed.TotalSeconds)
+    }
+
+    Write-WaExecutionProgress -Phase 'Operation' -ActionId $Action.Id -Message ('running: {0}' -f $resolved.Preview)
     $result = Invoke-WaNativeProcess -FilePath $resolved.FilePath -Arguments $resolved.Arguments `
-                -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill
+                -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill `
+                -OnHeartbeat $heartbeat -HeartbeatSeconds 5
 
     $messages = New-Object 'System.Collections.Generic.List[string]'
     $messages.Add(('Ran: {0}' -f $resolved.Preview))

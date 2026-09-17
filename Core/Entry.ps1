@@ -152,7 +152,7 @@ function Invoke-WaDryRun {
     Write-Host ('    Would still need a decision: {0} item(s)' -f @($approvalOutcome.Skipped).Count) -ForegroundColor Gray
     foreach ($item in @($approvalOutcome.Skipped)) { Write-Host ('      - {0} [{1}] {2}' -f $item.Title, $item.Risk, $item.Reason) -ForegroundColor DarkGray }
 
-    $results = Invoke-WaPlan -Session $Session -Plan $plan
+    $results = Invoke-WaPlan -Session $Session -Plan $plan -OnProgress (Get-WaExecutionProgressSink -Session $Session)
     Show-WaResults -Session $Session -Results $results
 
     $paths = Export-WaReport -Session $Session -Analysis $analysis
@@ -258,9 +258,10 @@ function Invoke-WaCleanupFlow {
             return @()
         }
 
+        # The count, and everything after it, is announced by the execution progress
+        # channel below, which reports each action as it starts and finishes.
         Write-Host ''
-        Write-Host ('  Executing {0} approved action(s).' -f $approved.Count) -ForegroundColor Cyan
-        $results = Invoke-WaPlan -Session $session -Plan $plan
+        $results = Invoke-WaPlan -Session $session -Plan $plan -OnProgress (Get-WaExecutionProgressSink -Session $session)
         Show-WaResults -Session $session -Results $results
 
         $providerVerification = Invoke-WaProviderVerification -Session $session -Results $results

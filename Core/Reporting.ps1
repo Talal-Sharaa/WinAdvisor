@@ -91,6 +91,45 @@ function New-WaConfidenceBadge {
     return ('<span class="{0}">{1}</span>' -f $class, (ConvertTo-WaHtmlText $Confidence))
 }
 
+function New-WaHtmlOutcomeSection {
+    <#
+    .SYNOPSIS
+        The measured outcome of a run, as the opening section of the report.
+
+    .DESCRIPTION
+        What was recovered is the reason the report exists, so it is the headline rather
+        than a footnote: everything below it in the report is the evidence behind it.
+
+        The three figures are deliberately kept apart rather than reconciled into one
+        number. Measured-during-execution is what each action counted as it worked and is
+        the defensible figure; free-space change is the volume delta, which Windows moves
+        continuously for reasons of its own; the prediction is what analysis expected before
+        anything ran. Presenting them together is what makes the claim checkable.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Verification)
+
+    $html = New-Object Text.StringBuilder
+
+    [void]$html.Append('<h2>What this run recovered</h2>')
+    [void]$html.Append(('<div class="cards"><div class="card"><div class="label">Measured during execution</div><div class="value">{0}</div><div class="sub">the defensible figure</div></div><div class="card"><div class="label">Free-space change</div><div class="value">{1}</div><div class="sub">context only; the system writes to disk throughout</div></div><div class="card"><div class="label">Predicted</div><div class="value">{2}</div><div class="sub">estimate before execution</div></div><div class="card"><div class="label">Actions</div><div class="value">{3}</div><div class="sub">succeeded / failed / skipped</div></div></div>' -f
+        (ConvertTo-WaHtmlText (Format-WaBytes $Verification.ReportedBytesReclaimed)),
+        (ConvertTo-WaHtmlText (Format-WaBytes $Verification.VolumeFreeSpaceDelta)),
+        (ConvertTo-WaHtmlText (Format-WaBytes $Verification.EstimatedBytes)),
+        (ConvertTo-WaHtmlText ('{0} / {1} / {2}' -f $Verification.Succeeded, $Verification.Failed, $Verification.Skipped))))
+
+    [void]$html.Append((New-WaHtmlTable -Row @($Verification.Metrics | Where-Object { $_.Changed }) -Column ([ordered]@{
+        'Metric' = { param($r) ConvertTo-WaHtmlText $r.Name }
+        'Before' = { param($r) ConvertTo-WaHtmlText $r.BeforeText }
+        'After'  = { param($r) ConvertTo-WaHtmlText $r.AfterText }
+    }) -EmptyMessage 'No measured quantity changed.'))
+
+    [void]$html.Append(('<div class="note">{0}</div>' -f (ConvertTo-WaHtmlText (@($Verification.Notes) -join ' '))))
+    [void]$html.Append('<div class="note">Action by action, with what each one reported: <a href="#what-was-done">What was done</a>.</div>')
+
+    return $html.ToString()
+}
+
 function Get-WaReportStyle {
     <#
     .SYNOPSIS
@@ -374,6 +413,13 @@ function New-WaHtmlReport {
         & $append '<div class="note">This was a read-only session. Nothing on this machine was changed.</div>'
     }
 
+    # ----------------------------------------------------------------- outcome
+    # First, because it is the answer to the question the reader opened the report with.
+    # Everything after it is the evidence: what ran, what it measured, and how to undo it.
+    if ($null -ne $Session.Verification) {
+        & $append (New-WaHtmlOutcomeSection -Verification $Session.Verification)
+    }
+
     # ---------------------------------------------------------- machine overview
     & $append '<h2>Machine overview</h2>'
     & $append (New-WaHtmlTable -Row @(
@@ -638,7 +684,7 @@ function New-WaHtmlReport {
 
     # ------------------------------------------------------------------ results
     if (@($Session.Results).Count -gt 0) {
-        & $append '<h2>What was done</h2>'
+        & $append '<h2 id="what-was-done">What was done</h2>'
         & $append (New-WaHtmlTable -Row @($Session.Results) -Column ([ordered]@{
             'Action'   = { param($r) ConvertTo-WaHtmlText $r.Summary }
             'Provider' = { param($r) ConvertTo-WaHtmlText $r.Provider }
@@ -659,24 +705,6 @@ function New-WaHtmlReport {
                 '<ul>' + ($lines -join '') + $errorLine + '</ul>'
             }
         }))
-    }
-
-    # ------------------------------------------------------------- verification
-    $verification = $Session.Verification
-    if ($null -ne $verification) {
-        & $append '<h2>Before and after</h2>'
-        & $append ('<div class="cards"><div class="card"><div class="label">Measured during execution</div><div class="value">{0}</div><div class="sub">the defensible figure</div></div><div class="card"><div class="label">Free-space change</div><div class="value">{1}</div><div class="sub">context only; the system writes to disk throughout</div></div><div class="card"><div class="label">Predicted</div><div class="value">{2}</div><div class="sub">estimate before execution</div></div></div>' -f
-            (ConvertTo-WaHtmlText (Format-WaBytes $verification.ReportedBytesReclaimed)),
-            (ConvertTo-WaHtmlText (Format-WaBytes $verification.VolumeFreeSpaceDelta)),
-            (ConvertTo-WaHtmlText (Format-WaBytes $verification.EstimatedBytes)))
-
-        & $append (New-WaHtmlTable -Row @($verification.Metrics | Where-Object { $_.Changed }) -Column ([ordered]@{
-            'Metric' = { param($r) ConvertTo-WaHtmlText $r.Name }
-            'Before' = { param($r) ConvertTo-WaHtmlText $r.BeforeText }
-            'After'  = { param($r) ConvertTo-WaHtmlText $r.AfterText }
-        }) -EmptyMessage 'No measured quantity changed.')
-
-        & $append ('<div class="note">{0}</div>' -f (ConvertTo-WaHtmlText (@($verification.Notes) -join ' ')))
     }
 
     # ---------------------------------------------------------------- rollback
