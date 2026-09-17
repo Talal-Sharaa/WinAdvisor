@@ -1,0 +1,52 @@
+{
+  "SchemaVersion": 2,
+  "_comment": "User-tunable defaults. Conservative on purpose. Copy this file, edit the copy, and pass it with -ConfigPath. Policy that governs what is allowed at all lives in policies.json, not here.",
+
+  "Scanning": {
+    "_comment": "Age thresholds stop the toolkit proposing deletion of files an application is actively using. Scan budgets keep a single directory from monopolising the run.",
+    "MinimumTempAgeDays": 7,
+    "MinimumCacheAgeDays": 14,
+    "LargeFileThresholdMB": 1024,
+    "MaxEntriesPerRoot": 50000,
+    "MaxScanSecondsPerRoot": 8,
+    "MaxLargeFiles": 100,
+    "DeepScanPaths": [],
+    "ExcludedPaths": []
+  },
+
+  "Risk": {
+    "_comment": "MaximumAutoApprovableRisk is the ceiling for the batch-approval option in the interactive plan. Anything at or above RequireIndividualApprovalAtOrAbove always needs its own explicit yes. AllowManualOnlyExecution is not honoured: MANUAL-ONLY is refused by the execution engine unconditionally, and the setting exists only so that turning it on and observing nothing change is verifiable.",
+    "MaximumAutoApprovableRisk": "LOW",
+    "RequireIndividualApprovalAtOrAbove": "HIGH",
+    "AllowManualOnlyExecution": false
+  },
+
+  "Safety": {
+    "_comment": "CreateRestorePointBeforeHighRisk attempts a System Restore checkpoint before the first HIGH-risk action. System Restore is not a universal undo: it does not restore user files and may be disabled or throttled by Windows.",
+    "CreateRestorePointBeforeHighRisk": true,
+    "RequireSupportedWindowsForExecution": true,
+    "AllowExternalTools": false,
+    "AllowDismAnalyze": true
+  },
+
+  "Reporting": {
+    "_comment": "IncludeProcessPaths controls whether executable paths appear in reports. Process command lines are never collected, because they routinely contain credentials and tokens.",
+    "Formats": ["Html", "Json"],
+    "OutputDirectory": "",
+    "IncludeProcessPaths": true,
+    "TopProcessCount": 25,
+    "TopStorageConsumerCount": 40
+  },
+
+  "Logging": {
+    "Verbosity": "Normal",
+    "RetainSessions": 50
+  },
+
+  "Providers": {
+    "_comment": "Empty Enabled means every registered provider whose prerequisites are met. Disabled always wins over Enabled.",
+    "Enabled": [],
+    "Disabled": [],
+    "Settings": {}
+  }
+}

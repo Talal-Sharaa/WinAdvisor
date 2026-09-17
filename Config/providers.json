@@ -1,0 +1,165 @@
+{
+  "SchemaVersion": 2,
+  "_comment": "Per-provider enablement and settings. Providers register themselves in code (Providers/*.ps1); this file only tunes them. An unknown key here is reported at load time rather than ignored silently.",
+
+  "Providers": {
+    "Windows.Temp": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeWindowsTemp": true,
+        "IncludeErrorReports": true,
+        "IncludeCrashDumps": true,
+        "IncludeThumbnailCache": true,
+        "IncludeShaderCaches": true
+      }
+    },
+
+    "Windows.Servicing": {
+      "Enabled": true,
+      "Settings": {
+        "AnalyzeComponentStore": true,
+        "AllowResetBase": false,
+        "_allowResetBaseComment": "DISM /ResetBase makes every currently installed update permanently non-uninstallable. Off by default; enabling it only makes the recommendation available, it is still HIGH risk and needs individual approval.",
+        "DismTimeoutSeconds": 3600
+      }
+    },
+
+    "Windows.Startup": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeScheduledTasks": true,
+        "MinimumMemoryMBToFlag": 150
+      }
+    },
+
+    "Windows.Services": {
+      "Enabled": true,
+      "Settings": {
+        "ReportOnly": true,
+        "_reportOnlyComment": "The services provider is advisory by design. Setting this to false has no effect while Config/policies.json ships an empty ServiceRecommendations list."
+      }
+    },
+
+    "Windows.Hibernation": {
+      "Enabled": true,
+      "Settings": {}
+    },
+
+    "Windows.RestorePoints": {
+      "Enabled": true,
+      "Settings": {}
+    },
+
+    "Windows.RecycleBin": {
+      "Enabled": true,
+      "Settings": {
+        "MinimumAgeDays": 30
+      }
+    },
+
+    "Windows.DeliveryOptimization": {
+      "Enabled": true,
+      "Settings": {}
+    },
+
+    "Browsers.Chromium": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeCodeCaches": true,
+        "IncludeGpuCache": true,
+        "_scopeComment": "Cache only. History, cookies, sessions, autofill, saved passwords, bookmarks and extensions are never targeted."
+      }
+    },
+
+    "Browsers.Firefox": {
+      "Enabled": true,
+      "Settings": {}
+    },
+
+    "Containers.Docker": {
+      "Enabled": true,
+      "Settings": {
+        "DockerTimeoutSeconds": 120,
+        "AllowImagePrune": true,
+        "AllowBuildCachePrune": true,
+        "AllowVolumePrune": false,
+        "_allowVolumePruneComment": "Volumes hold the data containers were built to keep. This flag is honoured only to the extent of surfacing volumes for manual review; the provider emits no automatic volume removal regardless of its value."
+      }
+    },
+
+    "Containers.Wsl": {
+      "Enabled": true,
+      "Settings": {
+        "AdvisoryOnly": true,
+        "_advisoryComment": "Microsoft documents how to expand a WSL virtual disk but publishes no supported in-place shrink procedure on the disk-space page. Compaction is therefore explained, never performed."
+      }
+    },
+
+    "Dev.DotNet": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeGlobalPackages": true,
+        "IncludeHttpCache": true,
+        "IncludeTempCache": true,
+        "IncludePluginsCache": true
+      }
+    },
+
+    "Dev.Node": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeNpm": true,
+        "IncludePnpm": true,
+        "IncludeYarn": true,
+        "IncludeBun": true
+      }
+    },
+
+    "Dev.Python": {
+      "Enabled": true,
+      "Settings": {
+        "IncludePip": true,
+        "IncludeUv": true
+      }
+    },
+
+    "Dev.Jvm": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeGradle": true,
+        "IncludeMaven": true,
+        "IncludeCoursier": true
+      }
+    },
+
+    "Dev.Rust": {
+      "Enabled": true,
+      "Settings": {}
+    },
+
+    "Dev.Editors": {
+      "Enabled": true,
+      "Settings": {
+        "IncludeVSCode": true,
+        "IncludeJetBrains": true,
+        "IncludeVisualStudio": true
+      }
+    },
+
+    "Storage.LargeFiles": {
+      "Enabled": true,
+      "Settings": {
+        "AdvisoryOnly": true
+      }
+    },
+
+    "External.Czkawka": {
+      "Enabled": false,
+      "Settings": {
+        "ExecutableName": "czkawka_cli",
+        "AdvisoryOnly": true,
+        "_comment": "Disabled by default and advisory only. Requires Config defaults Safety.AllowExternalTools to be true as well. Czkawka is never downloaded or installed by this toolkit; it is used only if the user has already installed it and enabled it here. Duplicate detection produces a report, never a deletion."
+      }
+    }
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "SchemaVersion": 2,
+  "_comment": "Safety policy. This file decides what the toolkit is permitted to do at all, independently of what any provider asks for. It is loaded before providers and is not overridable from a user config file.",
+
+  "OperationPolicy": {
+    "_comment": "MinimumRisk is a floor: a provider may classify an operation of this kind as more dangerous, never as less. This stops a provider from labelling a service change as SAFE in order to reach batch approval. RequiresIndividualApproval forces a per-item yes regardless of risk.",
+    "FileDelete": {
+      "MinimumRisk": "SAFE",
+      "RequiresIndividualApproval": false,
+      "Reversible": false,
+      "Note": "Deletes only the specific files listed in the reviewed manifest, re-validated immediately before each delete."
+    },
+    "NativeCommand": {
+      "MinimumRisk": "LOW",
+      "RequiresIndividualApproval": false,
+      "Reversible": false,
+      "Note": "Runs one entry from the command catalog. Arguments come from the catalog, never from provider-supplied strings."
+    },
+    "RegistryValueSet": {
+      "MinimumRisk": "MODERATE",
+      "RequiresIndividualApproval": false,
+      "Reversible": true,
+      "Note": "Writes one named value. The prior value, or its absence, is captured as a rollback record first."
+    },
+    "ServiceStartupSet": {
+      "MinimumRisk": "HIGH",
+      "RequiresIndividualApproval": true,
+      "Reversible": true,
+      "Note": "Changes one service start mode. No service recommendation ships by default; see ServiceRecommendations below."
+    },
+    "ScheduledTaskState": {
+      "MinimumRisk": "MODERATE",
+      "RequiresIndividualApproval": false,
+      "Reversible": true,
+      "Note": "Enables or disables one scheduled task."
+    },
+    "StartupItemState": {
+      "MinimumRisk": "MODERATE",
+      "RequiresIndividualApproval": false,
+      "Reversible": true,
+      "Note": "Enables or disables one startup item through the Explorer StartupApproved mechanism, leaving the original registry value intact."
+    },
+    "RestorePointCreate": {
+      "MinimumRisk": "SAFE",
+      "RequiresIndividualApproval": false,
+      "Reversible": false,
+      "Note": "Creates a System Restore checkpoint. Additive only; never removes existing restore points."
+    }
+  },
+
+  "ProtectedPaths": {
+    "_comment": "Paths are protected recursively: no FileDelete may target them or anything beneath them. RootsOnly are protected as exact paths only, so the directory itself can never be a cleanup root while its subdirectories remain reachable. That distinction matters: protecting the user profile recursively would also protect every application cache inside it, which would silently disable most of this toolkit. Tokens are expanded against the running machine at load time. This is a backstop; providers are separately restricted to the cache roots they declare.",
+    "Paths": [
+      "{Windows}",
+      "{System}",
+      "{Windows}\\WinSxS",
+      "{Windows}\\SysWOW64",
+      "{Windows}\\Installer",
+      "{Windows}\\servicing",
+      "{Windows}\\assembly",
+      "{Windows}\\Boot",
+      "{Windows}\\Fonts",
+      "{Windows}\\Registration",
+      "{Windows}\\Prefetch",
+      "{Windows}\\System32\\config",
+      "{Windows}\\System32\\catroot2",
+      "{ProgramFiles}",
+      "{ProgramFilesX86}",
+      "{Documents}",
+      "{UserProfile}\\Desktop",
+      "{UserProfile}\\Pictures",
+      "{UserProfile}\\Videos",
+      "{UserProfile}\\Music",
+      "{UserProfile}\\Downloads",
+      "{UserProfile}\\OneDrive",
+      "{UserProfile}\\.ssh",
+      "{UserProfile}\\.gnupg",
+      "{UserProfile}\\.aws",
+      "{UserProfile}\\.kube",
+      "{UserProfile}\\.docker",
+      "{RoamingAppData}\\Microsoft\\Protect",
+      "{RoamingAppData}\\Microsoft\\Credentials",
+      "{LocalAppData}\\Microsoft\\Credentials",
+      "{LocalAppData}\\Microsoft\\Vault",
+      "{LocalAppData}\\Docker\\wsl",
+      "{LocalAppData}\\Packages\\CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc\\LocalState"
+    ],
+    "RootsOnly": [
+      "{SystemDrive}",
+      "{UserProfile}",
+      "{LocalAppData}",
+      "{RoamingAppData}",
+      "{ProgramData}"
+    ],
+    "AllowExactRootMatch": [
+      "{Windows}\\Temp"
+    ],
+    "_allowExactRootComment": "Directories that sit under a recursively protected root but are themselves approved cleanup roots. Windows\\Temp is the only one. The exemption covers that directory and its contents; every sibling under Windows stays protected."
+  },
+
+  "ProtectedPathSegments": {
+    "_comment": "A FileDelete manifest is rejected if any target path contains one of these directory names. Source control metadata, dependency trees and virtual environments are never bulk-deleted by this toolkit.",
+    "Segments": [
+      ".git",
+      ".hg",
+      ".svn",
+      "node_modules",
+      "site-packages",
+      ".venv",
+      ".terraform",
+      "System Volume Information",
+      "$Recycle.Bin"
+    ]
+  },
+
+  "NeverDeleteExtensions": {
+    "_comment": "File types that are never deleted, wherever they are found, even inside an approved cache root. Virtual machine disks, database files, mail stores and key material are excluded outright rather than risk-classified.",
+    "Extensions": [
+      ".vhd", ".vhdx", ".avhdx", ".vmdk", ".vdi", ".qcow2", ".vmx", ".vbox", ".hds",
+      ".mdf", ".ldf", ".ndf", ".ibd", ".frm", ".sqlite", ".sqlite3", ".db3", ".accdb", ".mdb",
+      ".pst", ".ost",
+      ".kdbx", ".kdb",
+      ".pfx", ".p12", ".pem", ".key", ".ppk", ".jks", ".keystore", ".gpg", ".asc"
+    ]
+  },
+
+  "ProtectedServices": {
+    "_comment": "Services the toolkit refuses to modify under any circumstances: security, endpoint protection, device management, accessibility and core platform services. Matching is case-insensitive on the service name, with wildcard support.",
+    "Names": [
+      "WinDefend", "WdNisSvc", "Sense", "SecurityHealthService", "wscsvc", "SgrmBroker",
+      "MpsSvc", "BFE", "mpssvc",
+      "EventLog", "RpcSs", "DcomLaunch", "RpcEptMapper", "LSM", "Schedule", "CryptSvc",
+      "TrustedInstaller", "msiserver", "wuauserv", "UsoSvc", "WaaSMedicSvc",
+      "gpsvc", "Netlogon", "KeyIso", "SamSs", "VaultSvc", "ProfSvc", "Themes",
+      "Audiosrv", "AudioEndpointBuilder", "PlugPlay", "Power", "SystemEventsBroker",
+      "vds", "VSS", "swprv",
+      "CSFalconService", "SentinelAgent", "CbDefense", "CylanceSvc", "xagt", "TaniumClient",
+      "CcmExec", "IntuneManagementExtension", "AADConnectHealth*", "Microsoft.Management*",
+      "Sysmon*", "SplunkForwarder", "NlaSvc", "Dnscache", "nsi"
+    ]
+  },
+
+  "ProtectedStartupPatterns": {
+    "_comment": "Startup entries that are never proposed for disabling. Security agents, device management, accessibility tooling, input devices and storage/GPU drivers stay put regardless of their memory footprint.",
+    "Patterns": [
+      "*SecurityHealth*", "*Defender*", "*MsMpEng*", "*CSFalcon*", "*SentinelOne*",
+      "*CarbonBlack*", "*Cylance*", "*CrowdStrike*", "*Sophos*", "*ESET*", "*McAfee*",
+      "*Symantec*", "*TrendMicro*", "*Kaspersky*", "*Bitdefender*",
+      "*Intune*", "*CompanyPortal*", "*SCCM*", "*CcmExec*", "*Workspace ONE*",
+      "*Narrator*", "*Magnify*", "*osk*", "*Accessibility*",
+      "*SynTP*", "*ETDCtrl*", "*Elan*", "*Touchpad*", "*RtkAudio*", "*RAVCpl*", "*RtkNGUI*",
+      "*igfxTray*", "*hkcmd*", "*IntelGraphics*", "*RtkAudioService*",
+      "*BitLocker*", "*TPM*", "*SmartCard*",
+      "*IAStorIcon*", "*RstMwService*"
+    ]
+  },
+
+  "ServiceRecommendations": {
+    "_comment": "Intentionally empty. A service change is only defensible when the service is positively identified, its purpose is understood, the relevant software or hardware is actually present, there is a concrete benefit and the downside is documented. No entry has met that bar, so the Windows.Services provider reports and classifies as MANUAL-ONLY rather than proposing changes. Entries added here require: Name, Reason, RequiresComponentAbsent, Benefit, Downside, Reference.",
+    "Entries": []
+  },
+
+  "PersonalDataCategories": {
+    "_comment": "Categories that are always MANUAL-ONLY, no matter what they cost in storage. These are decisions only the person using the machine can make.",
+    "Categories": [
+      "Documents", "Media", "Downloads", "SourceRepository", "Database",
+      "VirtualMachineDisk", "ContainerVolume", "BrowserCredentials", "BrowserBookmarks",
+      "UnknownApplication", "UnknownDirectory", "DuplicateFiles"
+    ]
+  },
+
+  "SecurityFeatures": {
+    "_comment": "Features the toolkit will never disable, propose disabling, or offer as an optimisation. Requests to weaken any of these are out of scope for the project.",
+    "Names": [
+      "Microsoft Defender Antivirus", "Windows Firewall", "SmartScreen", "Credential Guard",
+      "Secure Boot", "BitLocker", "User Account Control", "Virtualization-based Security",
+      "Windows Update security servicing", "Endpoint Detection and Response agents",
+      "Device management agents", "Tamper Protection", "Attack Surface Reduction rules"
+    ]
+  }
+}

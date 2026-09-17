@@ -1,0 +1,8 @@
+# Runtime output: sessions, logs, reports and rollback state are machine-specific.
+Data/
+
+# Test output and the locally cached Pester dependency.
+TestResults/
+
+*.tmp
+*.log
