@@ -157,6 +157,62 @@ Describe 'File deletion in a sandbox' -Tag 'Execution' {
         $inventory.ProtectedBytes | Should -BeGreaterThan 0
     }
 
+    It 'leaves a file an application has open in place and still succeeds' {
+        $locked = Join-Path $script:cachePath 'old-1.tmp'
+        $handle = [IO.File]::Open($locked, 'Open', 'Read', 'None')
+        try {
+            $outcome = Invoke-WaInternal {
+                param($CachePath)
+                $session = New-WaSession -Mode 'Cleanup'
+                $candidate = Get-WaCacheRootCandidate -Session $session -Provider 'Test' -Key 'exec.lock1' `
+                    -Title 'Sandbox' -Category 'Test' -Path $CachePath -AgeDays 7 `
+                    -Risk 'LOW' -Confidence 'HIGH' -Explanation 'Sandbox files.' -MinimumBytes 0
+                $recommendation = New-WaFileCleanupRecommendation -Session $session -Candidate $candidate
+                $action = New-WaPlannedAction -Recommendation $recommendation -Order 1
+                Invoke-WaFileDeleteOperation -Session $session -Action $action -Operation $recommendation.Operations[0]
+            } $script:cachePath
+        } finally { $handle.Dispose() }
+
+        $outcome.Status | Should -Be 'Succeeded'
+        $outcome.Detail.Deleted | Should -Be 2
+        $outcome.Detail.InUse | Should -Be 1
+        $outcome.Detail.Errors | Should -Be 0
+        $outcome.Messages -join ' ' | Should -Match 'left in place'
+        Test-Path -LiteralPath $locked | Should -BeTrue
+    }
+
+    It 'reports a folder whose every candidate is in use as skipped, not failed' {
+        # This is the everyday temp-folder case: a handful of files, all held open by
+        # running applications. Nothing went wrong, so nothing is painted red.
+        $handles = @(Get-ChildItem -LiteralPath $script:cachePath -Filter 'old-*.tmp' |
+            ForEach-Object { [IO.File]::Open($_.FullName, 'Open', 'Read', 'None') })
+        try {
+            $outcome = Invoke-WaInternal {
+                param($CachePath)
+                $session = New-WaSession -Mode 'Cleanup'
+                $candidate = Get-WaCacheRootCandidate -Session $session -Provider 'Test' -Key 'exec.lockall' `
+                    -Title 'Sandbox' -Category 'Test' -Path $CachePath -AgeDays 7 `
+                    -Risk 'LOW' -Confidence 'HIGH' -Explanation 'Sandbox files.' -MinimumBytes 0
+                $recommendation = New-WaFileCleanupRecommendation -Session $session -Candidate $candidate
+                $action = New-WaPlannedAction -Recommendation $recommendation -Order 1
+                [pscustomobject]@{
+                    Operation = Invoke-WaFileDeleteOperation -Session $session -Action $action -Operation $recommendation.Operations[0]
+                    Action    = Invoke-WaPlannedAction -Session $session -Action $action
+                }
+            } $script:cachePath
+        } finally { $handles | ForEach-Object { $_.Dispose() } }
+
+        $outcome.Operation.Status | Should -Be 'Skipped'
+        $outcome.Operation.Detail.Deleted | Should -Be 0
+        $outcome.Operation.Detail.InUse | Should -Be 3
+        $outcome.Operation.Messages[0] | Should -Match 'Nothing was deleted'
+        $outcome.Operation.Messages -join ' ' | Should -Not -Match 'fail'
+
+        $outcome.Action.Status | Should -Be 'Skipped' -Because 'an action whose only operation changed nothing is not a success'
+        $outcome.Action.BytesReclaimed | Should -BeNullOrEmpty
+        @(Get-ChildItem -LiteralPath $script:cachePath -Filter 'old-*.tmp').Count | Should -Be 3
+    }
+
     It 'is idempotent: a second run finds nothing left to do' {
         $second = Invoke-WaInternal {
             param($CachePath)
@@ -563,6 +619,103 @@ Describe 'Execution progress' -Tag 'Execution' {
 
         $output | Should -Match 'deleting file 1,200 of 4,312'
         $output | Should -Match "`r" -Because 'the line is rewritten in place rather than appended'
+    }
+}
+
+Describe 'Native command outcome' -Tag 'Execution' {
+
+    # Recorded verbatim from a run where uvx-hosted tools (MCP servers) held the uv cache
+    # lock. uv exits 2 after waiting UV_LOCK_TIMEOUT seconds and changes nothing.
+    BeforeAll {
+        $script:uvBusyError = @'
+Cache is currently in-use, waiting for other uv processes to finish (use `--force` to override)
+error: Timeout (30s) when waiting for lock on `D:\DeveloperCaches\uv` at `D:\DeveloperCaches\uv\.lock`, is another uv process running? You can set `UV_LOCK_TIMEOUT` to increase the timeout.
+'@
+    }
+
+    It 'reports a tool that found its data held by another process as skipped, not failed' {
+        $outcome = Invoke-WaInternal {
+            param($ErrorText)
+            $resolved = Resolve-WaCommand -CommandId 'uv.cache.prune'
+            $result = [pscustomobject]@{ ExitCode = 2; Output = ''; Error = $ErrorText; DurationMs = 30000 }
+            Get-WaNativeCommandOutcome -Resolved $resolved -Result $result
+        } $script:uvBusyError
+
+        $outcome.Status | Should -Be 'Skipped'
+        $outcome.BytesReclaimed | Should -BeNullOrEmpty
+        $outcome.Messages[0] | Should -Match 'stopped without changing anything'
+        $outcome.Messages[0] | Should -Match 'uvx' -Because 'the advice names what usually holds the lock'
+        $outcome.Messages[0] | Should -Match 'does not force'
+        $outcome.Messages -join ' ' | Should -Match 'Exit code: 2'
+    }
+
+    It 'keeps a genuine non-zero exit as a failure' {
+        $outcome = Invoke-WaInternal {
+            $resolved = Resolve-WaCommand -CommandId 'uv.cache.prune'
+            $result = [pscustomobject]@{ ExitCode = 2; Output = ''; Error = 'error: No such file or directory (os error 2)'; DurationMs = 10 }
+            Get-WaNativeCommandOutcome -Resolved $resolved -Result $result
+        }
+
+        $outcome.Status | Should -Be 'Failed'
+        $outcome.Messages -join ' ' | Should -Match 'Error output: error: No such file'
+    }
+
+    It 'does not treat a busy message as a skip for a command that declares no busy pattern' {
+        $outcome = Invoke-WaInternal {
+            param($ErrorText)
+            $resolved = Resolve-WaCommand -CommandId 'npm.cache.clean'
+            $result = [pscustomobject]@{ ExitCode = 1; Output = ''; Error = $ErrorText; DurationMs = 10 }
+            Get-WaNativeCommandOutcome -Resolved $resolved -Result $result
+        } $script:uvBusyError
+
+        $outcome.Status | Should -Be 'Failed'
+    }
+
+    It 'flattens multi-line error output onto one indented line' {
+        $outcome = Invoke-WaInternal {
+            param($ErrorText)
+            $resolved = Resolve-WaCommand -CommandId 'uv.cache.prune'
+            $result = [pscustomobject]@{ ExitCode = 2; Output = ''; Error = $ErrorText; DurationMs = 10 }
+            Get-WaNativeCommandOutcome -Resolved $resolved -Result $result
+        } $script:uvBusyError
+
+        $errorLine = @($outcome.Messages | Where-Object { $_ -like 'Error output:*' })
+        $errorLine.Count | Should -Be 1
+        $errorLine[0] | Should -Not -Match "`n"
+        $errorLine[0] | Should -Match 'in-use.*\|.*Timeout'
+    }
+
+    It 'gives uv a short lock timeout instead of its five-minute default' {
+        $resolved = Invoke-WaInternal { Resolve-WaCommand -CommandId 'uv.cache.prune' }
+        $resolved.Environment['UV_LOCK_TIMEOUT'] | Should -Be '30'
+        $resolved.Arguments | Should -Not -Contain '--force' -Because 'overriding another process''s lock is never acceptable'
+    }
+}
+
+Describe 'Native process environment' -Tag 'Execution' {
+
+    It 'passes declared variables to the child process' {
+        $result = Invoke-WaInternal {
+            Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                -Arguments @('/c', 'echo', '%WA_TEST_SETTING%') -TimeoutSeconds 30 `
+                -Environment @{ WA_TEST_SETTING = 'from-the-catalog' }
+        }
+        $result.ExitCode | Should -Be 0
+        $result.Output.Trim() | Should -Be 'from-the-catalog'
+    }
+
+    It 'rejects a variable name that is not a plain identifier' {
+        { Invoke-WaInternal {
+            Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                -Arguments @('/c', 'echo', 'x') -Environment @{ 'WA=BAD' = '1' }
+        } } | Should -Throw -ExpectedMessage '*rejected*'
+    }
+
+    It 'rejects a value containing a newline' {
+        { Invoke-WaInternal {
+            Invoke-WaNativeProcess -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                -Arguments @('/c', 'echo', 'x') -Environment @{ WA_TEST = "one`ntwo" }
+        } } | Should -Throw -ExpectedMessage '*newline*'
     }
 }
 

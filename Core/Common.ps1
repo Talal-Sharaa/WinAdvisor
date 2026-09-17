@@ -174,6 +174,12 @@ function Invoke-WaNativeProcess {
         still running. Presentation only: a command that produces no output for minutes is
         otherwise indistinguishable from a hang. Without it the wait is a single blocking
         call, exactly as before.
+
+    .PARAMETER Environment
+        Variables set for the child process on top of the inherited environment. This is how
+        a documented tool setting that has no command-line form (uv's lock timeout, for
+        example) reaches the tool. Names must be plain identifiers and values may not
+        contain a newline.
     #>
     [CmdletBinding()]
     param(
@@ -183,7 +189,8 @@ function Invoke-WaNativeProcess {
         [switch]$NeverKill,
         [string]$WorkingDirectory,
         [scriptblock]$OnHeartbeat,
-        [ValidateRange(1, 3600)][int]$HeartbeatSeconds = 5
+        [ValidateRange(1, 3600)][int]$HeartbeatSeconds = 5,
+        [System.Collections.IDictionary]$Environment = @{}
     )
 
     if (-not [IO.Path]::IsPathRooted($FilePath)) { throw "Native executable path must be rooted: $FilePath" }
@@ -192,6 +199,11 @@ function Invoke-WaNativeProcess {
     foreach ($argument in $Arguments) {
         if ($null -eq $argument) { throw 'Null native argument rejected.' }
         if ($argument -match '["\r\n]') { throw "Native argument contains a quote or newline and was rejected: $argument" }
+    }
+
+    foreach ($name in @($Environment.Keys)) {
+        if ([string]$name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { throw "Environment variable name was rejected: $name" }
+        if ([string]$Environment[$name] -match '[\r\n]') { throw "Environment variable '$name' contains a newline and was rejected." }
     }
 
     $quoted = foreach ($argument in $Arguments) {
@@ -207,6 +219,9 @@ function Invoke-WaNativeProcess {
     $startInfo.RedirectStandardError  = $true
     if ($WorkingDirectory -and (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) {
         $startInfo.WorkingDirectory = $WorkingDirectory
+    }
+    foreach ($name in @($Environment.Keys)) {
+        $startInfo.EnvironmentVariables[[string]$name] = [string]$Environment[$name]
     }
 
     $process = New-Object Diagnostics.Process

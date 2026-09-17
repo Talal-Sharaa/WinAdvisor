@@ -53,6 +53,26 @@ Describe 'Catalog integrity' -Tag 'Catalog', 'Safety' {
         }
     }
 
+    It 'declares a valid busy pattern and advice together, or neither' {
+        foreach ($entry in $script:catalog) {
+            if ($entry.BusyPattern) {
+                { [void][regex]::new($entry.BusyPattern) } | Should -Not -Throw -Because "$($entry.Id) busy pattern must be a valid regex"
+                $entry.BusyAdvice | Should -Not -BeNullOrEmpty -Because "$($entry.Id) must say what usually holds the resource"
+            } else {
+                $entry.BusyAdvice | Should -BeNullOrEmpty -Because "$($entry.Id) advice without a pattern would never be shown"
+            }
+        }
+    }
+
+    It 'uses only plain identifiers for environment variable names' {
+        foreach ($entry in $script:catalog) {
+            foreach ($name in @($entry.Environment.Keys)) {
+                $name | Should -Match '^[A-Za-z_][A-Za-z0-9_]*$' -Because "$($entry.Id) sets '$name'"
+                [string]$entry.Environment[$name] | Should -Not -Match '[\r\n]'
+            }
+        }
+    }
+
     It 'contains no Docker volume removal command' {
         @($script:catalog | Where-Object { $_.Id -match 'volume' -and -not $_.ReadOnly }).Count |
             Should -Be 0 -Because 'volumes hold container data and are never pruned by this toolkit'

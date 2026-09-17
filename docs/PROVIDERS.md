@@ -218,6 +218,14 @@ list blocks both regardless of what a provider asks for.
 Worth knowing: rebuilding a wheel that needs a compiler is slower than downloading one, so
 clearing the pip cache on a machine that builds native extensions has a real cost.
 
+uv takes an exclusive lock on its cache to prune it and waits `UV_LOCK_TIMEOUT` seconds
+(300 by default) for other uv processes to finish. Tools started with `uvx` live inside
+the cache and hold a lock while they run, so on a machine with a uvx-hosted language server
+or MCP server open, pruning can never proceed. The catalog entry sets `UV_LOCK_TIMEOUT=30`
+and declares the "cache is currently in-use" output as a busy signal, so the action is
+reported as skipped after half a minute with an explanation, rather than failed after
+five. `--force` is never used.
+
 ### `Dev.Jvm` — Gradle, Maven, Coursier
 
 Gradle dependency cache, build cache, daemon logs (LOW) and wrapper distributions

@@ -12,6 +12,14 @@
     ReadOnly entries are inspection commands and are the only ones permitted to run in a
     read-only session. Each entry cites the documentation it was written from; the
     consolidated list lives in docs/SOURCES.md.
+
+    Two optional fields describe how a tool behaves when its data is in use:
+      * Environment - variables set for the process, for documented settings that have no
+        argument form. Names and values are validated by Invoke-WaNativeProcess.
+      * BusyPattern / BusyAdvice - a regular expression that, matched against a failing
+        command's output, identifies "another process holds this resource; nothing was
+        changed". That outcome is reported as skipped rather than failed, with BusyAdvice
+        explaining what usually holds the resource. WinAdvisor never forces such a lock.
 #>
 
 function Initialize-WaCommandCatalog {
@@ -40,9 +48,13 @@ function Initialize-WaCommandCatalog {
             [hashtable]$Placeholders = @{},
             [bool]$NeverKill = $false,
             [string]$Consequence = '',
-            [string]$Reverses = ''
+            [string]$Reverses = '',
+            [hashtable]$Environment = @{},
+            [string]$BusyPattern = '',
+            [string]$BusyAdvice = ''
         )
         [void](Get-WaRiskRank -Risk $MinimumRisk)
+        if ($BusyPattern) { [void][regex]::new($BusyPattern) }
         $catalog[$Id] = [pscustomobject][ordered]@{
             Id             = $Id
             Tool           = $Tool
@@ -58,6 +70,9 @@ function Initialize-WaCommandCatalog {
             NeverKill      = $NeverKill
             Consequence    = $Consequence
             Reverses       = $Reverses
+            Environment    = $Environment
+            BusyPattern    = $BusyPattern
+            BusyAdvice     = $BusyAdvice
             Reference      = $Reference
         }
     }
@@ -271,16 +286,28 @@ function Initialize-WaCommandCatalog {
         -ReadOnly $true -MinimumRisk 'SAFE' -RequiresAdmin $false -TimeoutSeconds 120 `
         -Reference 'https://docs.astral.sh/uv/reference/cli/'
 
+    # uv takes an exclusive lock on the cache to prune or clean it, and waits UV_LOCK_TIMEOUT
+    # seconds (300 by default) for other uv processes to let go. Tools started with uvx
+    # (language servers, MCP servers) live in the cache and hold that lock for as long as
+    # they run, so on a developer machine the wait would often be five minutes for nothing.
+    # 30 seconds is enough for an ordinary install to finish; a lock held longer than that
+    # is a running tool, and the honest outcome is "in use, try later", never --force.
+    $uvCacheEnvironment = @{ UV_LOCK_TIMEOUT = '30' }
+    $uvCacheBusyPattern = '(?i)cache is currently in-use|waiting for other uv processes|waiting for lock on'
+    $uvCacheBusyAdvice  = 'uv keeps its cache locked while any uv or uvx process is running, including tools started through uvx such as language servers and MCP servers. Close those and run again, or leave the cache as it is. WinAdvisor does not force the lock, because that could disturb the process holding it.'
+
     & $add -Id 'uv.cache.prune' -Tool 'uv' -Executable 'uv' -Resolution 'Path' `
         -Arguments @('cache', 'prune') -Purpose 'Remove outdated entries from the uv cache.' `
         -ReadOnly $false -MinimumRisk 'LOW' -RequiresAdmin $false -TimeoutSeconds 900 `
         -Consequence 'Only entries uv considers unused are removed; current environments keep working.' `
+        -Environment $uvCacheEnvironment -BusyPattern $uvCacheBusyPattern -BusyAdvice $uvCacheBusyAdvice `
         -Reference 'https://docs.astral.sh/uv/reference/cli/'
 
     & $add -Id 'uv.cache.clean' -Tool 'uv' -Executable 'uv' -Resolution 'Path' `
         -Arguments @('cache', 'clean') -Purpose 'Empty the uv cache completely.' `
         -ReadOnly $false -MinimumRisk 'LOW' -RequiresAdmin $false -TimeoutSeconds 900 `
         -Consequence 'Every cached distribution is re-downloaded on next use.' `
+        -Environment $uvCacheEnvironment -BusyPattern $uvCacheBusyPattern -BusyAdvice $uvCacheBusyAdvice `
         -Reference 'https://docs.astral.sh/uv/reference/cli/'
 
     # ------------------------------------------------------------------------- External
@@ -401,6 +428,9 @@ function Resolve-WaCommand {
         MinimumRisk    = $definition.MinimumRisk
         TimeoutSeconds = $definition.TimeoutSeconds
         NeverKill      = $definition.NeverKill
+        Environment    = $definition.Environment
+        BusyPattern    = $definition.BusyPattern
+        BusyAdvice     = $definition.BusyAdvice
         Purpose        = $definition.Purpose
         Consequence    = $definition.Consequence
         Reference      = $definition.Reference
@@ -453,7 +483,7 @@ function Invoke-WaCatalogProbe {
     }
 
     $result = Invoke-WaNativeProcess -FilePath $resolved.FilePath -Arguments $resolved.Arguments `
-                -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill
+                -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill -Environment $resolved.Environment
 
     [pscustomobject]@{
         CommandId = $CommandId

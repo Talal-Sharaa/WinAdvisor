@@ -367,7 +367,7 @@ function Restore-WaRollbackRecord {
             }
 
             [void](Assert-WaMutationAllowed -Session $Session -Operation ('reverse command ' + $reverseCommandId))
-            $result = Invoke-WaNativeProcess -FilePath $resolved.FilePath -Arguments $resolved.Arguments -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill
+            $result = Invoke-WaNativeProcess -FilePath $resolved.FilePath -Arguments $resolved.Arguments -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill -Environment $resolved.Environment
             if ($result.ExitCode -ne 0) { throw ("The counterpart command exited with code {0}." -f $result.ExitCode) }
             return (& $done ('Ran the documented counterpart: {0}' -f $resolved.Preview))
         }

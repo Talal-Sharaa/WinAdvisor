@@ -26,8 +26,8 @@ Verified by execution on the machine above, on both PowerShell versions.
 **Static analysis.** All 57 PowerShell files parse cleanly on both versions
 (`Tests/Test-Syntax.ps1`).
 
-**Test suite.** 184 Pester tests, all passing on **both** Windows PowerShell 5.1 (33s) and
-PowerShell 7.6.6 (35s):
+**Test suite.** 196 Pester tests, all passing on **both** Windows PowerShell 5.1 (39s) and
+PowerShell 7.6.6 (39s):
 
 | Area | Coverage |
 |---|---|
@@ -42,10 +42,10 @@ PowerShell 7.6.6 (35s):
 | Approval | Fingerprint invalidation on tamper, replay across actions, batch ceiling |
 | HIGH risk | Batch refused at three independent layers, including a forged record |
 | MANUAL-ONLY | Refused at four layers, including a forged approval |
-| Command catalog | Integrity, references, placeholder injection, quote/newline rejection, probe gate over every mutating entry |
+| Command catalog | Integrity, references, placeholder injection, quote/newline rejection, probe gate over every mutating entry, busy-pattern and environment declarations |
 | Configuration | Validation, partial merge, policy not user-overridable, drive-root token |
 | Provider contract | All 20 providers complete; execution routed to the core; failure isolation |
-| Execution | Real file deletion in a sandbox, age filtering, manifest re-validation, idempotency |
+| Execution | Real file deletion in a sandbox, age filtering, manifest re-validation, files held open (skipped, never failed), idempotency, a tool reporting its data busy classified as skipped, environment passed to child processes |
 | End-to-end | Analysis → approval → execution → verification against real files |
 | Rollback | Capture, JSON round-trip, real HKCU restore, crafted-record refusal |
 | Reporting | HTML contains no external resources |
@@ -214,7 +214,7 @@ have been wrong four times over.
 
 ```powershell
 pwsh -NoProfile -File Tests/Test-Syntax.ps1            # 57 files parse
-pwsh -NoProfile -File Tests/Run-Tests.ps1              # 184 tests
+pwsh -NoProfile -File Tests/Run-Tests.ps1              # 196 tests
 powershell -NoProfile -File Tests/Run-Tests.ps1        # same, on 5.1
 
 .\WinAdvisor.ps1 -Mode ViewSpecs -NonInteractive       # read-only inventory

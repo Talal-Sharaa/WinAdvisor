@@ -396,6 +396,7 @@ function Invoke-WaPlannedAction {
     $bytesReclaimed = [long]0
     $rollbackId = ''
     $failures = 0
+    $skips = 0
 
     # Policy is re-asserted immediately before execution, not only at plan time.
     try {
@@ -424,6 +425,7 @@ function Invoke-WaPlannedAction {
             if ($null -ne $outcome.BytesReclaimed) { $bytesReclaimed += [long]$outcome.BytesReclaimed }
             if ($outcome.RollbackId) { $rollbackId = $outcome.RollbackId }
             if ($outcome.Status -eq 'Failed') { $failures++ }
+            elseif ($outcome.Status -eq 'Skipped') { $skips++ }
         } catch {
             $failures++
             $messages.Add(("Operation {0} failed: {1}" -f $operation.Kind, $_.Exception.Message))
@@ -432,8 +434,13 @@ function Invoke-WaPlannedAction {
     }
 
     $stopwatch.Stop()
-    $status = if ($failures -eq 0) { 'Succeeded' }
-              elseif ($failures -lt @($recommendation.Operations).Count) { 'PartiallySucceeded' }
+    # An operation that changed nothing for a stated, benign reason (every candidate file
+    # in use, a tool's data held by another process) is a skip, not a success: the action
+    # is reported as skipped so nobody reads a green line as work done.
+    $completed = @($recommendation.Operations).Count - $failures - $skips
+    $status = if ($failures -eq 0 -and $skips -eq 0) { 'Succeeded' }
+              elseif ($failures -eq 0 -and $completed -eq 0) { 'Skipped' }
+              elseif ($completed -gt 0) { 'PartiallySucceeded' }
               else { 'Failed' }
 
     $result = New-WaExecutionResult `
@@ -562,6 +569,12 @@ function Invoke-WaFileDeleteOperation {
         behind a protected path, so each one is checked again at the moment of deletion.
         A file that fails any check is skipped with a recorded reason rather than forced.
 
+        A file that Windows refuses to delete because an application has it open, or
+        because access is denied (a running executable, a loaded DLL), is left in place.
+        That is the normal state of a folder in active use, not a fault: the operation
+        succeeded if it deleted anything, and is skipped, not failed, if there was nothing
+        it could delete. Only an error of an unexpected kind counts as a failure.
+
         No directory is ever removed, and no recursive delete is performed. Only the exact
         files in the manifest are touched.
     #>
@@ -578,7 +591,9 @@ function Invoke-WaFileDeleteOperation {
     $messages = New-Object 'System.Collections.Generic.List[string]'
     $deletedBytes = [long]0
     $deletedCount = 0
-    $failedCount = 0
+    $inUseCount = 0
+    $errorCount = 0
+    $firstError = ''
     $processedCount = 0
 
     foreach ($file in $preview.Eligible) {
@@ -588,9 +603,13 @@ function Invoke-WaFileDeleteOperation {
             [IO.File]::Delete($path)
             $deletedCount++
             $deletedBytes += [long]$file.Length
+        } catch [IO.IOException], [UnauthorizedAccessException] {
+            # Open by an application, a running executable, or removed by something else
+            # in the meantime. Normal for a live folder; the file is simply left alone.
+            $inUseCount++
         } catch {
-            # In use, denied, or removed by something else in the meantime: all normal.
-            $failedCount++
+            $errorCount++
+            if (-not $firstError) { $firstError = $_.Exception.Message }
         }
 
         # Throttled: a manifest of tens of thousands of files would otherwise spend more
@@ -601,19 +620,32 @@ function Invoke-WaFileDeleteOperation {
                 $processedCount, $preview.EligibleCount, (Format-WaBytes $deletedBytes))
     }
 
-    $messages.Add(('Deleted {0} file(s) totalling {1} under {2}.' -f $deletedCount, (Format-WaBytes $deletedBytes), $preview.Root))
+    if ($deletedCount -gt 0) {
+        $messages.Add(('Deleted {0} file(s) totalling {1} under {2}.' -f $deletedCount, (Format-WaBytes $deletedBytes), $preview.Root))
+    } else {
+        $messages.Add(('Nothing was deleted under {0}.' -f $preview.Root))
+    }
     if ($preview.SkippedCount -gt 0) {
         $reasons = @($preview.Skipped | Group-Object Reason | Sort-Object Count -Descending | Select-Object -First 4 |
             ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count })
         $messages.Add(('Skipped {0} file(s) that were no longer eligible: {1}' -f $preview.SkippedCount, ($reasons -join '; ')))
     }
-    if ($failedCount -gt 0) {
-        $messages.Add(('{0} file(s) could not be deleted because they were locked or access was denied. This is expected for files an application is using.' -f $failedCount))
+    if ($inUseCount -gt 0) {
+        $messages.Add(('{0} file(s) were left in place because an application has them open or access was denied. That is normal for a folder in use; they are considered again on the next run.' -f $inUseCount))
     }
+    if ($errorCount -gt 0) {
+        $messages.Add(('{0} file(s) could not be deleted for an unexpected reason: {1}' -f $errorCount, $firstError))
+    }
+
+    # Deleting something is success. Deleting nothing is a failure only when something
+    # actually went wrong; a folder whose every candidate is in use is simply skipped.
+    $status = if ($deletedCount -gt 0) { 'Succeeded' }
+              elseif ($errorCount -gt 0) { 'Failed' }
+              else { 'Skipped' }
 
     [pscustomobject]@{
         Kind           = 'FileDelete'
-        Status         = $(if ($deletedCount -gt 0 -or $preview.EligibleCount -eq 0) { 'Succeeded' } else { 'Failed' })
+        Status         = $status
         Messages       = $messages.ToArray()
         BytesReclaimed = $deletedBytes
         RollbackId     = ''
@@ -621,7 +653,8 @@ function Invoke-WaFileDeleteOperation {
             Root      = $preview.Root
             Deleted   = $deletedCount
             Skipped   = $preview.SkippedCount
-            Failed    = $failedCount
+            InUse     = $inUseCount
+            Errors    = $errorCount
             Reviewed  = $preview.TotalCount
         }
     }
@@ -690,27 +723,65 @@ function Invoke-WaNativeCommandOperation {
     Write-WaExecutionProgress -Phase 'Operation' -ActionId $Action.Id -Message ('running: {0}' -f $resolved.Preview)
     $result = Invoke-WaNativeProcess -FilePath $resolved.FilePath -Arguments $resolved.Arguments `
                 -TimeoutSeconds $resolved.TimeoutSeconds -NeverKill:$resolved.NeverKill `
-                -OnHeartbeat $heartbeat -HeartbeatSeconds 5
+                -OnHeartbeat $heartbeat -HeartbeatSeconds 5 -Environment $resolved.Environment
+
+    return (Get-WaNativeCommandOutcome -Resolved $resolved -Result $result -RollbackId $rollbackId)
+}
+
+function Get-WaNativeCommandOutcome {
+    <#
+    .SYNOPSIS
+        Turns a finished process into an operation outcome.
+
+    .DESCRIPTION
+        A non-zero exit is a failure unless the catalog entry declares a BusyPattern and the
+        output matches it. That is the tool saying another process holds its data and it
+        changed nothing, which is a reason to try later, not a fault, and it is reported as
+        skipped with the entry's advice on what usually holds the resource.
+
+        Kept separate from the process launch so the classification can be exercised with
+        recorded output, without the tool being installed or its data being busy.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Resolved,
+        [Parameter(Mandatory)]$Result,
+        [string]$RollbackId = ''
+    )
 
     $messages = New-Object 'System.Collections.Generic.List[string]'
-    $messages.Add(('Ran: {0}' -f $resolved.Preview))
-    $messages.Add(('Exit code: {0}' -f $result.ExitCode))
+    $messages.Add(('Ran: {0}' -f $Resolved.Preview))
+    $messages.Add(('Exit code: {0}' -f $Result.ExitCode))
 
-    $output = Get-WaRedactedText -Text ([string]$result.Output)
-    if ($output) {
-        $tail = @($output -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 6)
-        if ($tail.Count -gt 0) { $messages.Add(('Output: {0}' -f ($tail -join ' | '))) }
-    }
+    $output = Get-WaRedactedText -Text ([string]$Result.Output)
+    $outputLine = Get-WaOutputTail -Text $output
+    if ($outputLine) { $messages.Add(('Output: {0}' -f $outputLine)) }
 
     # Several tools report what they freed on stdout; parse it as a measured figure.
-    $reclaimed = Get-WaReclaimedBytesFromOutput -Text ([string]$result.Output)
+    $reclaimed = Get-WaReclaimedBytesFromOutput -Text ([string]$Result.Output)
 
-    if ($result.ExitCode -ne 0) {
-        $errorText = Get-WaRedactedText -Text ([string]$result.Error)
+    if ($Result.ExitCode -ne 0) {
+        $errorText = Get-WaRedactedText -Text ([string]$Result.Error)
+        $errorLine = Get-WaOutputTail -Text $errorText
+        if ($errorLine) { $messages.Add(('Error output: {0}' -f $errorLine)) }
+
+        $busyPattern = [string](Get-WaProperty -Object $Resolved -Name 'BusyPattern' -Default '')
+        if ($busyPattern -and (($errorText + "`n" + $output) -match $busyPattern)) {
+            $explanation = ("Another {0} process is using the data this command works on, so '{1}' stopped without changing anything." -f
+                $Resolved.Tool, $Resolved.Preview)
+            $advice = [string](Get-WaProperty -Object $Resolved -Name 'BusyAdvice' -Default '')
+            if ($advice) { $explanation = $explanation + ' ' + $advice }
+            return [pscustomobject]@{
+                Kind = 'NativeCommand'; Status = 'Skipped'
+                Messages = @(@($explanation) + $messages.ToArray())
+                BytesReclaimed = $null; RollbackId = $RollbackId
+            }
+        }
+
         return [pscustomobject]@{
             Kind = 'NativeCommand'; Status = 'Failed'
-            Messages = @($messages + ("Error output: {0}" -f $errorText))
-            BytesReclaimed = $null; RollbackId = $rollbackId
+            Messages = $messages.ToArray()
+            BytesReclaimed = $null; RollbackId = $RollbackId
         }
     }
 
@@ -718,8 +789,25 @@ function Invoke-WaNativeCommandOperation {
         Kind = 'NativeCommand'; Status = 'Succeeded'
         Messages = $messages.ToArray()
         BytesReclaimed = $reclaimed
-        RollbackId = $rollbackId
+        RollbackId = $RollbackId
     }
+}
+
+function Get-WaOutputTail {
+    <#
+    .SYNOPSIS
+        The last few non-empty lines of tool output on one line, for the results view.
+
+    .DESCRIPTION
+        Results are printed indented under their action. A raw multi-line message breaks
+        that indentation, so lines are joined with a separator instead.
+    #>
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Text, [int]$Lines = 6)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $tail = @($Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Last $Lines)
+    return ($tail -join ' | ')
 }
 
 function Get-WaReclaimedBytesFromOutput {

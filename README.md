@@ -468,12 +468,13 @@ pwsh -NoProfile -File Tests/Run-Tests.ps1       # Pester 5 suite
 pwsh -NoProfile -File Tests/Run-Tests.ps1 -Tag Safety
 ```
 
-184 tests covering path safety and traversal, protected paths, services, startup items and
+196 tests covering path safety and traversal, protected paths, services, startup items and
 file types, risk and confidence vocabularies, operation policy floors, read-only guarantees,
 approval enforcement and tampering, MANUAL-ONLY refusal at four layers, command catalog
 integrity and argument injection, configuration validation, provider contract and failure
-isolation, real file deletion in a sandbox, manifest re-validation, idempotency, execution
-progress reporting and its inability to affect what runs, and rollback capture and
+isolation, real file deletion in a sandbox, manifest re-validation, files held open by an
+application, idempotency, a tool reporting its data busy, execution progress reporting and
+its inability to affect what runs, and rollback capture and
 restoration including crafted-record refusal.
 
 Pester 5 is required and is **not** installed automatically — a project that tells you to
@@ -507,7 +508,16 @@ or use `-IncludeProvider` to narrow the run. `ViewSpecs` is fast.
 
 **Fewer bytes reclaimed than estimated.**
 Almost always locked files. Close the browser or editor and re-run. The report shows
-reviewed, deleted and skipped counts separately.
+reviewed, deleted and skipped counts separately. A folder whose every candidate is in use
+(a few files in `%TEMP%`, typically) is reported as *Skipped*, not *Failed*: nothing went
+wrong, and nothing was changed.
+
+**"Another uv process is using the data this command works on."**
+uv locks its cache while any `uv` or `uvx` process runs, and tools started through `uvx`
+(language servers, MCP servers) hold that lock for as long as they are open. WinAdvisor
+waits 30 seconds rather than uv's default five minutes, then reports the action as
+*Skipped*. It never passes `--force`, which would override a lock another process is
+relying on. Close the uvx-hosted tools and run again, or leave the cache as it is.
 
 **Free-space change does not match the reported figure.**
 Expected, and explained in the report. Windows writes to disk continuously during a run.
