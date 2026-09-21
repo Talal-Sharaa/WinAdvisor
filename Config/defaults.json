@@ -25,7 +25,7 @@
     "_comment": "CreateRestorePointBeforeHighRisk attempts a System Restore checkpoint before the first HIGH-risk action. System Restore is not a universal undo: it does not restore user files and may be disabled or throttled by Windows.",
     "CreateRestorePointBeforeHighRisk": true,
     "RequireSupportedWindowsForExecution": true,
-    "AllowExternalTools": false,
+    "AllowExternalTools": true,
     "AllowDismAnalyze": true
   },
 

@@ -20,11 +20,15 @@ Describe 'Default configuration' -Tag 'Configuration' {
         $script:config.MaximumAutoApprovableRisk | Should -Be 'LOW'
         $script:config.RequireIndividualApprovalAtOrAbove | Should -Be 'HIGH'
         $script:config.AllowManualOnlyExecution | Should -BeFalse
-        $script:config.AllowExternalTools | Should -BeFalse -Because 'external tools are opt-in'
+        $script:config.AllowExternalTools | Should -BeTrue -Because 'Czkawka scans are enabled by default'
     }
 
-    It 'never implies a deep scan' {
-        @($script:config.DeepScanPaths).Count | Should -Be 0 -Because 'recursion must be requested explicitly'
+    It 'keeps general deep scans explicit while configuring Czkawka personal folders' {
+        @($script:config.DeepScanPaths).Count | Should -Be 0
+        $settings = $script:config.ProviderConfig['External.Czkawka'].Settings
+        $settings.AutoDownload | Should -BeTrue
+        @($settings.DefaultScanPaths) -join ',' | Should -Be '{Downloads},{Desktop},{Documents},{Pictures},{Videos},{Music}'
+        @($settings.ScanTypes).Count | Should -Be 6
     }
 
     It 'applies a non-zero age threshold to temp and cache files' {
@@ -172,8 +176,9 @@ Describe 'Provider enablement' -Tag 'Configuration' {
         Invoke-WaInternal { param($c) Test-WaProviderEnabled -Config $c -Provider 'Windows.Temp' } $script:config | Should -BeTrue
     }
 
-    It 'disables external-tool providers by default' {
-        Invoke-WaInternal { param($c) Test-WaProviderEnabled -Config $c -Provider 'External.Czkawka' } $script:config | Should -BeFalse
+    It 'enables Czkawka without a custom configuration' {
+        $script:config.AllowExternalTools | Should -BeTrue
+        Invoke-WaInternal { param($c) Test-WaProviderEnabled $c 'External.Czkawka' } $script:config | Should -BeTrue
     }
 
     It 'lets an explicit disable win over everything' {

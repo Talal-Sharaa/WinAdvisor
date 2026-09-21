@@ -16,6 +16,7 @@ Register-WaProvider -Name 'Storage.LargeFiles' -Order 400 `
     -Category 'Storage' `
     -Description 'Reports files above the configured size threshold in explicitly named directories, categorised by type. Advisory only: nothing is ever proposed for deletion based on size.' `
     -AdvisoryOnly $true `
+    -UsesDeepScanPaths $true `
     -TestAvailable {
         param($Session)
         New-WaProviderAvailability -Available $true

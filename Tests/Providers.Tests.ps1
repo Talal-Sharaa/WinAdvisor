@@ -60,6 +60,11 @@ Describe 'Provider registration' -Tag 'Providers' {
         ($script:providers | Where-Object { $_.Name -eq 'External.Czkawka' }).ExternalDependency | Should -Be 'czkawka_cli'
     }
 
+    It 'marks the providers that scan -DeepScanPath directories' {
+        $names = @($script:providers | Where-Object { $_.UsesDeepScanPaths } | ForEach-Object { $_.Name } | Sort-Object)
+        $names | Should -Be @('External.Czkawka', 'Storage.LargeFiles')
+    }
+
     It 'rejects a duplicate registration' {
         { Invoke-WaInternal {
             Register-WaProvider -Name 'Windows.Temp' -Title 'dup' -Category 'x' -Description 'd' `
@@ -72,6 +77,36 @@ Describe 'Provider registration' -Tag 'Providers' {
             Register-WaProvider -Name 'Test.Incomplete' -Title 't' -Category 'x' -Description 'd' `
                 -TestAvailable {} -GetInventory {} -GetAnalysis {} -GetCleanupCandidates {}
         } } | Should -Throw -ExpectedMessage '*no GetCleanupPlan*'
+    }
+}
+
+Describe 'Deep scan providers that did not run' -Tag 'Providers' {
+    BeforeAll {
+        $script:gapStatus = @(
+            [pscustomobject]@{ Name = 'External.Czkawka'; Available = $false; Messages = @('Czkawka has no eligible scan folders (Protected path: C:\).') }
+            [pscustomobject]@{ Name = 'Containers.Docker'; Available = $false; Messages = @('Not present on this machine.') }
+            [pscustomobject]@{ Name = 'Storage.LargeFiles'; Available = $true; Messages = @() }
+        )
+        function Get-GapOutput {
+            param([string[]]$DeepScanPaths)
+            Invoke-WaInternal {
+                param($b)
+                $session = [pscustomobject]@{ Config = [pscustomobject]@{ DeepScanPaths = $b.Paths } }
+                (Show-WaDeepScanGap -Session $session -Analysis ([pscustomobject]@{ ProviderStatus = $b.Status }) 6>&1 | Out-String)
+            } -Bundle @{ Paths = @($DeepScanPaths); Status = $script:gapStatus }
+        }
+    }
+
+    It 'names the deep-scan provider that did not run, with its reason, and nothing else' {
+        $output = Get-GapOutput -DeepScanPaths @('C:\', 'D:\')
+        $output | Should -Match 'External\.Czkawka did not scan C:\\, D:\\'
+        $output | Should -Match 'Protected path: C:\\'
+        $output | Should -Not -Match 'Containers\.Docker' -Because 'only scanners the user named paths for are called out'
+        $output | Should -Not -Match 'Storage\.LargeFiles' -Because 'it ran'
+    }
+
+    It 'stays silent when no deep-scan path was given' {
+        (Get-GapOutput -DeepScanPaths @()).Trim() | Should -BeNullOrEmpty
     }
 }
 

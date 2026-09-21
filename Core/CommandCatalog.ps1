@@ -311,18 +311,31 @@ function Initialize-WaCommandCatalog {
         -Reference 'https://docs.astral.sh/uv/reference/cli/'
 
     # ------------------------------------------------------------------------- External
-    # Czkawka is advisory only: it reports duplicate groups, and this toolkit never asks
-    # it to delete anything. Duplicate resolution on personal data is the user's decision.
-    & $add -Id 'czkawka.duplicates' -Tool 'Czkawka' -Executable 'czkawka_cli' -Resolution 'Path' `
-        -Arguments @('dup', '--directories', '{Directory}', '--search-method', 'hash', '--file-to-save', '{ReportFile}') `
+    # Czkawka only scans. The execution engine deletes exact, reviewed JSON candidates.
+    & $add -Id 'czkawka.version' -Tool 'Czkawka' -Executable 'czkawka_cli' -Resolution 'Path' `
+        -Arguments @('--version') -Purpose 'Verify the supported Czkawka CLI version.' `
+        -ReadOnly $true -MinimumRisk 'SAFE' -RequiresAdmin $false -TimeoutSeconds 30 `
+        -Reference 'https://github.com/qarmin/czkawka/releases/tag/12.0.2'
+    foreach ($scan in @(
+        @{ Id = 'duplicates'; Command = 'dup'; Extra = @('--search-method', 'hash', '--hash-type', 'BLAKE3', '--minimal-file-size', '1') }
+        @{ Id = 'empty-folders'; Command = 'empty-folders'; Extra = @() }
+        @{ Id = 'empty-files'; Command = 'empty-files'; Extra = @() }
+        @{ Id = 'temporary'; Command = 'temp'; Extra = @() }
+        @{ Id = 'similar-images'; Command = 'image'; Extra = @('--minimal-file-size', '1', '--max-difference', '5') }
+        @{ Id = 'broken-files'; Command = 'broken'; Extra = @() }
+    )) {
+    & $add -Id ('czkawka.' + $scan.Id) -Tool 'Czkawka' -Executable 'czkawka_cli' -Resolution 'Path' `
+        -Arguments (@($scan.Command, '--directories', '{Directory}', '--compact-file-to-save', '{ReportFile}',
+            '--disable-cache', '--ignore-error-code-on-found', '--do-not-print-results') + $scan.Extra) `
         -Placeholders @{
             Directory  = '^[A-Za-z]:\\[^"\r\n\*\?<>\|]{0,240}$'
             ReportFile = '^[A-Za-z]:\\[^"\r\n\*\?<>\|]{0,240}$'
         } `
-        -Purpose 'Find duplicate files in an explicitly chosen directory and write a report.' `
+        -Purpose ('Scan selected directories for {0} and write JSON.' -f $scan.Id) `
         -ReadOnly $true -MinimumRisk 'SAFE' -RequiresAdmin $false -TimeoutSeconds 1800 `
         -Consequence 'Produces a report only. No deletion argument is ever passed.' `
-        -Reference 'https://github.com/qarmin/czkawka/blob/master/czkawka_cli/README.md'
+        -Reference 'https://github.com/qarmin/czkawka/blob/12.0.2/czkawka_cli/src/commands.rs'
+    }
 
     return $catalog
 }
@@ -371,13 +384,16 @@ function Resolve-WaCommand {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$CommandId,
-        [System.Collections.IDictionary]$Values = @{}
+        [System.Collections.IDictionary]$Values = @{},
+        $Session = $null
     )
 
     $definition = Get-WaCommandDefinition -CommandId $CommandId
 
     $executablePath = $null
-    if ($definition.Resolution -eq 'System') {
+    if ($definition.Tool -eq 'Czkawka' -and $null -ne $Session) {
+        $executablePath = Resolve-WaCzkawkaExecutable -Session $Session
+    } elseif ($definition.Resolution -eq 'System') {
         $executablePath = Get-WaSystemExecutable -Name $definition.Executable
     } else {
         $executablePath = Resolve-WaCommandPath -Name $definition.Executable
@@ -455,7 +471,7 @@ function Invoke-WaCatalogProbe {
         $Session = $null
     )
 
-    $resolved = Resolve-WaCommand -CommandId $CommandId -Values $Values
+    $resolved = Resolve-WaCommand -CommandId $CommandId -Values $Values -Session $Session
     if (-not $resolved.ReadOnly) {
         throw "Command '$CommandId' is not a read-only probe and cannot be run during inspection."
     }

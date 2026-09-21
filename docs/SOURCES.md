@@ -204,9 +204,11 @@ Licences confirmed from each project's own repository.
 | Pester (test dependency) | Apache-2.0 | <https://github.com/pester/Pester> |
 
 - **Czkawka CLI usage** —
-  <https://github.com/qarmin/czkawka/blob/master/czkawka_cli/README.md>
-  The `dup` subcommand, `--directories`, `--search-method`, `--file-to-save`. Deletion flags
-  were read specifically so they could be excluded; none appears in the command catalog.
+  <https://github.com/qarmin/czkawka/blob/12.0.2/czkawka_cli/src/commands.rs>
+  The `dup`, `empty-folders`, `empty-files`, `temp`, `image`, `broken` subcommands;
+  `--compact-file-to-save`, `--disable-cache`, `--ignore-error-code-on-found` and directory
+  exclusions. No deletion flag appears in the catalog. The Windows binary and SHA-256 are
+  pinned to <https://github.com/qarmin/czkawka/releases/tag/12.0.2>.
 
 - **BleachBit CLI** —
   <https://docs.bleachbit.org/doc/command-line-interface.html>

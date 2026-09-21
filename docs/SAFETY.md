@@ -16,6 +16,7 @@ The complete list of calls that can change machine state:
 | File | Primitive | Guard |
 |---|---|---|
 | `Core/Execution.ps1` | `[IO.File]::Delete` | approved root, policy, per-file re-validation |
+| `Core/Execution.ps1` | Czkawka file / nonrecursive directory deletion | exact session manifest, HIGH risk, individual approval, retained-copy and content checks |
 | `Core/Execution.ps1` | `Set-ItemProperty` / `New-ItemProperty` | HKLM/HKCU only, rollback captured first |
 | `Core/Execution.ps1` | `Set-Service` | protected-service list, rollback captured first |
 | `Core/Execution.ps1` | `Enable-/Disable-ScheduledTask` | `\Microsoft\Windows\*` refused, rollback first |
@@ -25,12 +26,38 @@ The complete list of calls that can change machine state:
 | `Core/Elevation.ps1` | `Start-Process -Verb RunAs` | fixed arguments, constrained mode |
 | `Core/{Common,Logging,Reporting,Session,Rollback}.ps1` | `New-Item -ItemType Directory` | only under `Data/` |
 
-**Providers contain no mutating primitives at all.** The only filesystem write in the entire
-`Providers/` directory is `New-Item -ItemType Directory` for the Czkawka report output under
-`Data/Reports`. This is the structural result of ADR-002 and the single most important
-property of the design: a provider cannot change the machine even if it wanted to.
+**Providers contain no mutating primitives.** Czkawka report creation lives in
+`Core/Czkawka.ps1`; target deletion lives in `Core/Execution.ps1`. `Core/CzkawkaInstaller.ps1`
+downloads and verifies the pinned CLI into `Tools/Czkawka` on first enabled use. The
+standalone `Scripts/Install-Czkawka.ps1` shares this implementation. Dependency setup can
+run in inspection modes, after provider enablement and scan-root validation; it does not
+change scan targets. A failed checksum never replaces an existing executable, incomplete
+downloads are removed, and no unverified download is executed.
 
 Everything else in `Providers/` reads, measures and describes.
+
+### Czkawka cleanup exception
+
+Czkawka 12.0.2 scans the six standard personal folders by default, or explicitly selected
+folders when supplied. Missing, protected, linked and offline default roots are skipped.
+Personal-file deletion still needs an explicit choice of exact targets. Each scan type is
+one plan action. On the review screen (`Core/CzkawkaReview.ps1`) the user selects items,
+individually or with Czkawka's bulk rules. The action is then rebuilt with exactly those
+operations (`Set-WaPlanActionRecommendation`, which drops any earlier approval), and the
+user approves that list individually by typing `YES`. This does not weaken `FileDelete` or
+ordinary cache policy. `Safety.AllowExternalTools: false` or disabling the provider
+prevents scanning and dependency download.
+`CzkawkaDelete` has a HIGH floor, requires individual approval, and checks its parameters
+against the session's scanned manifest as well as the approval fingerprint. No CLI deletion
+flag is allowed. No duplicate or similar-image copy is kept automatically. A selection
+covering a whole group is refused. Confirming a selection reserves the group's unselected
+members, and deleting a member requires a reserved member of the same group to be present
+and unchanged, and for duplicates byte-identical. That member is held open during the
+delete. Local scope, exclusions, repository markers, protected extensions and links are
+rechecked. Folder removal is nonrecursive and fails when new content appears. Deletion is
+permanent and System Restore cannot recover it.
+
+Regression and real-binary fixture tests are in `Tests/Czkawka.Tests.ps1`.
 
 ---
 
@@ -119,11 +146,15 @@ inside the profile, or the toolkit is useless*.
 ## Attack-shaped questions and their answers
 
 **Can a provider delete an arbitrary file?**
-No. A provider builds a manifest only through `Get-WaCacheRootCandidate`, which measures a
+No. Routine cache providers build manifests through `Get-WaCacheRootCandidate`, which measures a
 directory. The resulting operation references a root *by key*; the executor resolves that
 key against roots registered in this session. Registering a root runs it through the
 protected-path and protected-segment checks. Every individual file is then re-validated at
 the moment of deletion.
+
+Czkawka uses a separate manifest registered during the current scan. Its executor also
+requires exact manifest and approval fingerprints, selected-root containment and individual
+approval; a changed manifest or an out-of-scope target is refused.
 
 **Can an edited plan file redirect a delete?**
 No. Changing the root invalidates the action fingerprint, so the approval no longer matches
@@ -255,7 +286,7 @@ provider stage is failure-isolated, and a provider that cannot parse what it rec
 reports itself degraded rather than acting on a misreading. The Docker provider explicitly
 refuses to propose anything when `docker system df` produces output it cannot parse.
 
-**Advisory items are the user's risk.** Docker volumes, WSL disks, duplicates and large
+**Advisory items are the user's risk.** Docker volumes, WSL disks and large
 files are explained but not acted on. A user who follows the manual instructions is
 operating outside the toolkit's guarantees, which is why those instructions carry their own
 warnings.

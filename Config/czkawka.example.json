@@ -1,0 +1,12 @@
+{
+  "Safety": { "AllowExternalTools": true },
+  "Providers": {
+    "Enabled": ["External.Czkawka"],
+    "Settings": {
+      "External.Czkawka": {
+        "AutoDownload": true,
+        "ScanTypes": ["duplicates", "empty-folders", "empty-files", "temporary", "similar-images", "broken-files"]
+      }
+    }
+  }
+}

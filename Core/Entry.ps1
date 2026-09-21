@@ -136,7 +136,7 @@ function Invoke-WaDryRun {
     }
 
     Write-Host ''
-    Write-Host '  DRY RUN - the full pipeline runs and nothing is changed.' -ForegroundColor Cyan
+    Write-Host '  DRY RUN - no cleanup changes will be made. Enabled tools may download missing dependencies.' -ForegroundColor Cyan
 
     $analysis = Get-WaAnalysis -Session $Session -IncludeComponentStore
     Show-WaQuestionSet -Session $Session
@@ -158,7 +158,7 @@ function Invoke-WaDryRun {
     $paths = Export-WaReport -Session $Session -Analysis $analysis
     Write-Host ''
     foreach ($path in $paths) { Write-Host ('  report: {0}' -f $path) -ForegroundColor Green }
-    Write-Host '  Dry run complete. This machine was not modified.' -ForegroundColor Green
+    Write-Host '  Dry run complete. No cleanup changes were made.' -ForegroundColor Green
 
     return $results
 }
@@ -211,6 +211,7 @@ function Invoke-WaCleanupFlow {
     try {
         $analysis = Get-WaAnalysis -Session $session -IncludeComponentStore
         Show-WaFindings -Analysis $analysis
+        Show-WaDeepScanGap -Session $session -Analysis $analysis
         Show-WaQuestionSet -Session $session
 
         $plan = New-WaPlan -Session $session -Analysis $analysis

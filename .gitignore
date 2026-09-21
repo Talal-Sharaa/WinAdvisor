@@ -3,6 +3,7 @@ Data/
 
 # Test output and the locally cached Pester dependency.
 TestResults/
+Tools/Czkawka/
 
 *.tmp
 *.log

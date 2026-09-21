@@ -28,6 +28,8 @@ $script:WaCoreFiles = @(
     'Configuration'   # config/policy loading and validation
     'Safety'          # path safety, risk/confidence ranks, policy gates
     'CommandCatalog'  # the allow-list of every external command the toolkit may run
+    'CzkawkaInstaller'# pinned dependency setup; also used by the standalone installer
+    'Czkawka'         # versioned scan reports and validation of reviewed cleanup targets
     'Inventory'       # bounded filesystem measurement
     'Session'         # session lifecycle and read-only mode
     'ProviderContract'# provider registration and contract validation
@@ -39,11 +41,12 @@ $script:WaCoreFiles = @(
     'Planning'        # plan construction
     'Approval'        # approval records and enforcement
     'Elevation'       # per-action elevation
-    'Execution'       # the only code allowed to change the machine
+    'Execution'       # the only code allowed to apply cleanup changes
     'Rollback'        # rollback records and restoration
     'Verification'    # before/after baselines
     'Reporting'       # HTML + JSON reports
     'Interface'       # interactive menu
+    'CzkawkaReview'   # choosing which Czkawka results to delete, with Czkawka's selection rules
     'Entry'           # Start-WinAdvisor
 )
 

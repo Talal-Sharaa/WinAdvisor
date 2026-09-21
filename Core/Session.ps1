@@ -43,8 +43,7 @@ function New-WaSession {
     }
 
     if ($DeepScanPath) {
-        # An explicit -DeepScanPath is the authorisation for recursion. Configuration
-        # alone never triggers a deep scan.
+        # Explicit paths replace configured deep-scan paths and Czkawka's default folders.
         $Config.DeepScanPaths = @($DeepScanPath | ForEach-Object { Get-WaNormalizedPath -Path $_ })
     }
     if ($IncludeProvider) { $Config.EnabledProviders  = @($IncludeProvider) }

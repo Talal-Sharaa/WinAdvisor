@@ -3,6 +3,12 @@
   "_comment": "Safety policy. This file decides what the toolkit is permitted to do at all, independently of what any provider asks for. It is loaded before providers and is not overridable from a user config file.",
 
   "OperationPolicy": {
+    "CzkawkaDelete": {
+      "MinimumRisk": "HIGH",
+      "RequiresIndividualApproval": true,
+      "Reversible": false,
+      "Note": "Deletes one Czkawka candidate chosen on the review screen, within explicitly selected roots. A group member is deleted only while another member left unselected is present and unchanged; file contents are rechecked; empty directories are removed non-recursively."
+    },
     "_comment": "MinimumRisk is a floor: a provider may classify an operation of this kind as more dangerous, never as less. This stops a provider from labelling a service change as SAFE in order to reach batch approval. RequiresIndividualApproval forces a per-item yes regardless of risk.",
     "FileDelete": {
       "MinimumRisk": "SAFE",

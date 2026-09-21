@@ -89,7 +89,7 @@ precondition was absent.
 | Docker prune commands | Engine not running | `docker system df` parsing, base-1000 conversion, degraded reporting |
 | Elevated relaunch (UAC) | Session not elevated; would prompt | Requirement detection, per-action blocking with explanation, constrained mode parameter |
 | `Checkpoint-Computer` | Requires elevation | Gate, and honest reporting when Windows declines |
-| Czkawka duplicate scan | Tool not installed; disabled by default | Three-gate refusal, catalog entry, absence of any deletion argument |
+| Czkawka 12.0.2 cleanup | Default personal-folder scanning; real Windows CLI tested on disposable fixtures | All six scans, default and explicit roots, individual approval, retained copies, stale manifests, empty-tree validation, broken-file diagnoses, read-only execution and verified automatic dependency setup |
 | `ServiceStartupSet` | No service recommendation ships | Handler, protected-service refusal, rollback capture, restore |
 | `ScheduledTaskState` | No task recommendation ships | Handler, servicing-task refusal, rollback |
 

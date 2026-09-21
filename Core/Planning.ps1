@@ -155,6 +155,42 @@ function Get-WaPlanAction {
     return (@($Plan.Actions | Where-Object { $_.Id -eq $ActionId }) | Select-Object -First 1)
 }
 
+function Set-WaPlanActionRecommendation {
+    <#
+    .SYNOPSIS
+        Replaces what one planned action will do, before it is approved.
+
+    .DESCRIPTION
+        Used when the user narrows an action on a review screen (Czkawka results). The
+        action keeps its place and id, loses any approval it had, and gets a new
+        fingerprint, so only an approval given afterwards can run it.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Session,
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][string]$ActionId,
+        [Parameter(Mandatory)]$Recommendation
+    )
+
+    if ($Recommendation.Id -ne $ActionId) { throw "Replacement recommendation '$($Recommendation.Id)' does not match action '$ActionId'." }
+    [void](Assert-WaRecommendationPolicy -Recommendation $Recommendation -Policy $Session.Config.Policy)
+
+    $actions = @($Plan.Actions)
+    for ($i = 0; $i -lt $actions.Count; $i++) {
+        if ($actions[$i].Id -ne $ActionId) { continue }
+        $replacement = New-WaPlannedAction -Recommendation $Recommendation -Order $actions[$i].Order
+        $actions[$i] = $replacement
+        $Plan.Actions = $actions
+        $Plan.Summary = Get-WaPlanSummary -Plan $Plan
+        Write-WaLog -Session $Session -Level 'Info' -Category 'Planning' -Message (
+            "Action '{0}' narrowed before approval: {1}" -f $ActionId, $Recommendation.Title
+        )
+        return $replacement
+    }
+    throw "No action '$ActionId' exists in plan $($Plan.Id)."
+}
+
 function Get-WaApprovedAction {
     <#
     .SYNOPSIS

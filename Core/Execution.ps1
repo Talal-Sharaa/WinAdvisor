@@ -347,8 +347,24 @@ function Get-WaSimulatedResult {
     }
 
     $eligibleBytes = [long]0
+    $unselectedCandidates = 0
     foreach ($operation in $recommendation.Operations) {
         switch ($operation.Kind) {
+            'CzkawkaDelete' {
+                # Unapproved Czkawka results are candidates, not intentions: until someone
+                # picks items on the review screen there is nothing to check per file.
+                if (-not $wouldRun) {
+                    $unselectedCandidates++
+                } else {
+                    try {
+                        [void](Assert-WaCzkawkaCandidate -Session $Session -Operation $operation)
+                        $messages.Add(('Would permanently delete: {0}' -f $operation.Parameters.Target.Path))
+                        $eligibleBytes += [long]$operation.Parameters.Target.Length
+                    } catch {
+                        $messages.Add(('Would skip: {0}' -f $_.Exception.Message))
+                    }
+                }
+            }
             'FileDelete' {
                 $preview = Get-WaFileDeletePreview -Session $Session -Action $Action -Operation $operation
                 $eligibleBytes += $preview.Bytes
@@ -371,6 +387,9 @@ function Get-WaSimulatedResult {
             $messages.Add('Administrator rights are required and this session does not have them, so it would be blocked.')
         }
     }
+    if ($unselectedCandidates -gt 0) {
+        $messages.Add(('{0} candidate(s) found. In a cleanup run you choose which to delete on a review screen; nothing is selected by default.' -f $unselectedCandidates))
+    }
 
     New-WaExecutionResult -ActionId $Action.Id -Provider $recommendation.Provider -Status 'Simulated' `
         -Summary ('Dry run: no change was made. {0}' -f $(if ($wouldRun) { 'This action is approved and would have run.' } else { 'This action is not approved.' })) `
@@ -388,6 +407,8 @@ function Invoke-WaPlannedAction {
     param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Action)
 
     [void](Assert-WaMutationAllowed -Session $Session -Operation ('action ' + $Action.Id))
+    $script:WaCzkawkaVerifiedAction = $null
+    $script:WaCzkawkaOperationIndex = $null
 
     $recommendation = $Action.Recommendation
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
@@ -488,6 +509,7 @@ function Invoke-WaOperation {
     [void](Assert-WaMutationAllowed -Session $Session -Operation $Operation.Kind)
 
     switch ($Operation.Kind) {
+        'CzkawkaDelete'      { return (Invoke-WaCzkawkaDeleteOperation -Session $Session -Action $Action -Operation $Operation) }
         'FileDelete'         { return (Invoke-WaFileDeleteOperation -Session $Session -Action $Action -Operation $Operation) }
         'NativeCommand'      { return (Invoke-WaNativeCommandOperation -Session $Session -Action $Action -Operation $Operation) }
         'RegistryValueSet'   { return (Invoke-WaRegistryValueSetOperation -Session $Session -Action $Action -Operation $Operation) }
@@ -657,6 +679,97 @@ function Invoke-WaFileDeleteOperation {
             Errors    = $errorCount
             Reviewed  = $preview.TotalCount
         }
+    }
+}
+
+# The action whose approval and policy were last verified for Czkawka deletion, and an
+# identity index of its operations. One reviewed action can hold thousands of deletions;
+# re-fingerprinting the whole action for each file would make the run quadratic. Both are
+# cleared at the start of every action (Invoke-WaPlannedAction), so a check never outlives
+# the single action it was made for.
+$script:WaCzkawkaVerifiedAction = $null
+$script:WaCzkawkaOperationIndex = $null
+
+function Test-WaActionContainsOperation {
+    <# True when this exact operation object appears exactly once in the action. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Action, [Parameter(Mandatory)]$Operation)
+
+    if ($null -eq $script:WaCzkawkaOperationIndex -or -not [object]::ReferenceEquals($script:WaCzkawkaOperationIndex.Action, $Action)) {
+        $index = New-Object 'System.Collections.Generic.Dictionary[int,System.Collections.Generic.List[object]]'
+        foreach ($candidate in @($Action.Recommendation.Operations)) {
+            $key = [Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($candidate)
+            if (-not $index.ContainsKey($key)) { $index[$key] = New-Object 'System.Collections.Generic.List[object]' }
+            $index[$key].Add($candidate)
+        }
+        $script:WaCzkawkaOperationIndex = @{ Action = $Action; Index = $index }
+    }
+    $key = [Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Operation)
+    if (-not $script:WaCzkawkaOperationIndex.Index.ContainsKey($key)) { return $false }
+    $found = 0
+    foreach ($candidate in $script:WaCzkawkaOperationIndex.Index[$key]) {
+        if ([object]::ReferenceEquals($candidate, $Operation)) { $found++ }
+    }
+    return ($found -eq 1)
+}
+
+function Invoke-WaCzkawkaDeleteOperation {
+    <# Deletes only a session-registered, individually approved Czkawka candidate. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Action, [Parameter(Mandatory)]$Operation)
+
+    [void](Assert-WaMutationAllowed -Session $Session -Operation 'Czkawka deletion')
+    if (-not [object]::ReferenceEquals($script:WaCzkawkaVerifiedAction, $Action)) {
+        [void](Assert-WaRecommendationPolicy -Recommendation $Action.Recommendation -Policy $Session.Config.Policy)
+        if ($Action.Recommendation.Provider -ne 'External.Czkawka' -or -not (Test-WaApproval $Action) -or $Action.Approval.Scope -ne 'Individual') {
+            throw 'Czkawka deletion requires individual approval of this exact operation.'
+        }
+        $script:WaCzkawkaVerifiedAction = $Action
+    }
+    if (-not (Test-WaActionContainsOperation -Action $Action -Operation $Operation)) {
+        throw 'Czkawka deletion requires individual approval of this exact operation.'
+    }
+    $targetStream = $null
+    $keeperStream = $null
+    $deleted = 0
+    $bytes = [long]0
+    $status = 'Skipped'
+    $messages = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        $keeper = Assert-WaCzkawkaCandidate $Session $Operation
+        $parameters = $Operation.Parameters
+        if ($parameters.Mode -eq 'empty-folders') {
+            foreach ($directory in $parameters.Directories) {
+                # Revalidate the absolute target; never recursively remove a directory.
+                # Directory.Delete(false) fails if anything was added after the scan.
+                Assert-WaCzkawkaPath $Session $directory
+                [IO.Directory]::Delete($directory, $false)
+                $deleted++
+            }
+        } else {
+            # Hold the kept file against writes/removal while deleting the other copy, then
+            # re-check with that same kept file.
+            if ($null -ne $keeper) {
+                $keeperStream = [IO.File]::Open($keeper.Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            }
+            $targetStream = [IO.File]::Open($parameters.Target.Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+            [void](Assert-WaCzkawkaCandidate $Session $Operation -Keeper $keeper)
+            [IO.File]::Delete($parameters.Target.Path)
+            $deleted = 1
+            $bytes = [long]$parameters.Target.Length
+        }
+        $status = 'Succeeded'
+        $messages.Add(('Permanently deleted {0} item(s): {1}' -f $deleted, $parameters.Target.Path))
+    } catch {
+        $messages.Add(('Left in place where possible: {0}. Removed {1} item(s).' -f $_.Exception.Message, $deleted))
+        if ($deleted -gt 0) { $status = 'Failed' }
+    } finally {
+        if ($null -ne $targetStream) { $targetStream.Dispose() }
+        if ($null -ne $keeperStream) { $keeperStream.Dispose() }
+    }
+    [pscustomobject]@{
+        Kind = 'CzkawkaDelete'; Status = $status; Messages = $messages.ToArray()
+        BytesReclaimed = $bytes; RollbackId = ''; Detail = @{ Deleted = $deleted }
     }
 }
 

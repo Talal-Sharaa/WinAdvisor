@@ -85,7 +85,7 @@ caches through `dotnet nuget locals`. Docker through the Docker CLI. Hibernation
 - **No performance claim is made anywhere.** Storage recovered and configuration changed
   are measured. Speed is not measured, so it is not claimed.
 
-**It says no.** Docker volumes, WSL disks, the Recycle Bin, duplicates, unknown services and
+**It says no.** Docker volumes, WSL disks, the Recycle Bin, unknown services and
 unknown startup items are explained but never acted on. When safety cannot be positively
 established, the answer is refusal.
 
@@ -127,7 +127,8 @@ Explains where the space went, by category, and reports what it could **not** at
 That unattributed figure is deliberate: a storage report that silently accounts for 40% of
 a disk invites you to assume the other 60% is junk.
 
-Deep scanning is never implicit. To look inside a specific directory:
+The general large-file scan needs explicit paths. Czkawka separately scans the six standard
+personal folders by default. To override its folders and enable the general deep scan:
 
 ```powershell
 .\WinAdvisor.ps1 -Mode Storage -DeepScanPath 'D:\Projects'
@@ -141,6 +142,10 @@ run in a session the execution engine refuses to act on, not a separate simulati
 
 The approval simulation shows exactly which items would have been batch-approved and which
 would still need a decision, and why.
+
+An enabled Czkawka scan automatically downloads its verified CLI if missing, including in
+Analyze, Plan and DryRun. These modes do not delete or modify scan targets. Dependency
+setup and report/log output are the only local writes made by the Czkawka inspection flow.
 
 ---
 
@@ -163,13 +168,18 @@ Seven independent layers. A bug in one does not open the others.
 7. **Per-file validation** — every file is re-checked at the moment of deletion, including
    that its size and timestamp still match what you reviewed.
 
-### Never, under any circumstances
+### Protected from routine cleanup
 
 Personal documents · files matched by extension pattern · directories judged by size alone ·
 source repositories · databases · VM disks · Docker volumes · WSL distributions · browser
 credentials, bookmarks, autofill, cookies, history or sessions · restore points · WinSxS
 contents · Prefetch · any security feature · unknown services · unknown startup items ·
-uninstalling applications · installing third-party tools.
+uninstalling applications.
+
+The Czkawka workflow is a specific exception for personal files, name-classified
+temporary files and empty directories. Select folders explicitly, pick the exact targets
+on a review screen, and type `YES` to confirm the list for each result type. System paths, credentials, cloud placeholders,
+repositories and protected file types remain excluded. See [Czkawka](#czkawka-1202).
 
 The full audit, including the five issues found during the adversarial review and how they
 were fixed, is in [docs/SAFETY.md](docs/SAFETY.md).
@@ -259,7 +269,7 @@ occasional plain progress line instead.
 | `Dev.Rust` | Cargo registry caches | Yes |
 | `Dev.Editors` | VS Code, JetBrains, Visual Studio caches | Yes |
 | `Storage.LargeFiles` | Large files by category | No — advisory |
-| `External.Czkawka` | Duplicate detection | No — report only, opt-in |
+| `External.Czkawka` | Duplicates, empty folders/files, temporary files, similar images, broken files | Yes — scans enabled by default, items chosen on a review screen, then approved with `YES` |
 
 Per-provider detail, including exactly what each does and does not touch, is in
 [docs/PROVIDERS.md](docs/PROVIDERS.md).
@@ -281,19 +291,84 @@ Two cases deserve specific mention because the filesystem does not distinguish t
 
 ## External integrations
 
-WinAdvisor **never downloads or installs anything.** A provider with an external dependency
-requires three things, all of which must be true:
+External tools require `Safety.AllowExternalTools: true` (on by default) and an enabled
+provider. Czkawka runs during normal analysis and automatically downloads its pinned CLI
+when missing. Download failures and incompatible tools are explained in provider status.
 
-1. the provider enabled in `Config/providers.json` (Czkawka is off by default);
-2. `Safety.AllowExternalTools` set to `true` in your configuration (off by default);
-3. the tool already present on PATH.
+### Czkawka 12.0.2
 
-If a dependency is missing, the report says so and explains the options rather than
-proceeding silently.
+The first enabled scan downloads the [official Windows CLI release](https://github.com/qarmin/czkawka/releases/tag/12.0.2)
+if needed, verifies the pinned SHA-256, and saves it in `Tools/Czkawka`. Later runs reuse
+that copy. Setup requires internet access and write permission to the toolkit folder;
+it needs no separate installation command, PATH change, or administrator prompt:
 
-Czkawka, the only current integration, is invoked in report-only mode. **No deletion
-argument exists in the command catalog**, so no configuration turns it into a deleting
-provider.
+```powershell
+# Scan the default personal folders and review proposals; no files are deleted.
+.\WinAdvisor.ps1 -Mode DryRun
+
+# Scan again, choose what to delete on the review screen, then confirm.
+.\WinAdvisor.ps1 -Mode Cleanup
+```
+
+Alternatively set `Providers.Settings.External.Czkawka.ExecutablePath` to your downloaded
+`windows_czkawka_cli.exe`, or place `czkawka_cli` / `windows_czkawka_cli.exe` on PATH.
+The integration checks for version **12.0.2** before scanning.
+
+Set `Providers.Settings.External.Czkawka.AutoDownload` to `false` to disable automatic
+downloads for offline deployments. `Scripts/Install-Czkawka.ps1` remains available for
+manual installation or repair. A configured `ExecutablePath` must be valid; automatic
+setup does not overwrite a custom path or replace an incompatible user-installed version.
+
+By default, Czkawka scans **Downloads, Desktop, Documents, Pictures, Videos and Music**.
+Missing, protected, linked and offline default folders are skipped. Windows folder
+locations are used for redirected folders where available. `-DeepScanPath` replaces this
+list for that run; it does not add to it. Customize
+`Providers.Settings.External.Czkawka.DefaultScanPaths`, or set it to `[]` to require explicit
+paths. These defaults apply only to Czkawka, not the general large-file deep scan.
+Use `-ExcludeProvider External.Czkawka`, `Providers.Disabled`, or
+`Safety.AllowExternalTools: false` to disable Czkawka. To run only Czkawka, use
+`-IncludeProvider External.Czkawka` or the supplied `Config/czkawka.example.json`.
+
+All six scan types are enabled by default. To select fewer, copy the example and
+edit `Providers.Settings.External.Czkawka.ScanTypes`: `duplicates`, `empty-folders`,
+`empty-files`, `temporary`, `similar-images`, `broken-files`. Multiple selected folders are scanned
+together, so duplicate groups can span folders. `Scanning.ExcludedPaths` is honoured.
+Temporary files must also meet `Scanning.MinimumTempAgeDays` (7 by default).
+
+Czkawka writes JSON reports under `Data/Reports/Czkawka/<SessionId>`. Each scan type is
+one plan line, for example `Duplicate files: 31 file(s) in 14 group(s)`, marked HIGH risk.
+It is never batch-approved. `-NonInteractive` deletes nothing.
+
+When you review it, a selection screen lists the results in pages. Nothing is selected
+at first. Choose with the same bulk options as Czkawka's own **Select** menu:
+
+- **Duplicates:** select all except the longest path, shortest path, biggest size,
+  smallest size, newest or oldest file in each group; invert selection in group; invert
+  selection; deselect all; select all; custom select/unselect.
+- **Similar images:** the same, plus select all except the biggest or smallest resolution.
+- **Empty folders, empty files, temporary files, broken files:** invert selection,
+  deselect all, select all, custom select/unselect.
+
+Type `t 3, 7-12` to toggle items, `n`/`p` to page, and `d` when done. Custom
+select/unselect takes a wildcard on the full path, such as `*\Downloads\*`. You then see
+the selected list and type `YES` to delete it, or anything else to keep everything.
+
+At least one file in every duplicate or similar-image group always stays. A selection that
+covers a whole group is refused, and each deletion is checked against a kept file in its
+group first. **Compare similar images yourself before selecting**, because they may show
+different content. A path found by several scan types appears only under the first one.
+Run just `similar-images` if you want to review those groups independently of
+byte-identical duplicates.
+
+Broken-file scanning checks the release's built-in PDF, audio, image, archive, font and
+markup formats (JSON/XML/TOML/YAML/SVG). The review screen shows each file's validation or
+decoding error. A file that fails validation may still be recoverable; inspect it before selecting.
+Video validation that requires external FFmpeg/ffprobe is not enabled.
+
+Deletion uses WinAdvisor's core engine with fresh metadata/content checks and protection
+for the kept copy. Czkawka receives no deletion flags. Empty folder trees are rechecked
+and removed from the leaves upward using nonrecursive deletes; scan roots are preserved.
+**Deletion is permanent, bypasses the Recycle Bin, and has no rollback.**
 
 ---
 
@@ -378,7 +453,8 @@ Rollback unavailable.
 The deleted content was classified as regenerable.
 ```
 
-That is why only regenerable content is ever proposed for deletion.
+Routine cleanup proposes regenerable content. The Czkawka workflow also proposes
+personal-file deletions, each individually reviewed with an explicit no-rollback warning.
 
 ---
 
@@ -455,7 +531,8 @@ Rules that are enforced, not merely suggested:
 - **Ask the tool where its data lives.** Do not hard-code a cache path; they move.
 - **State the consequence.** Every recommendation says what the user loses.
 - **Use MANUAL-ONLY freely.** `New-WaAdvisoryRecommendation` is the right answer whenever
-  personal data, ambiguity or irreversibility is involved.
+  personal data or ambiguity prevents a concrete, reviewable action. Czkawka uses its
+  dedicated HIGH-risk operation for explicitly scoped, individually approved deletions.
 - Add per-provider settings to `Config/providers.json`, and a row to `docs/PROVIDERS.md`.
 
 ---

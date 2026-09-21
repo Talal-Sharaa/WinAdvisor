@@ -3,7 +3,8 @@
 
     A provider is a descriptor plus script blocks. Providers are responsible for knowing
     their own domain: where a tool keeps its caches, what its output means, what is safe
-    to propose. They are NOT responsible for changing anything.
+    to propose. They never change cleanup targets. Czkawka can request verified
+    dependency setup through Core/CzkawkaInstaller.ps1 before scanning.
 
     The contract, matching the seven-member interface in the design:
 
@@ -19,7 +20,7 @@
     execution body, the read-only guarantee, the approval gate and the rollback capture
     would each have as many implementations as there are providers. Instead every provider
     expresses intent as typed operations and Core/Execution.ps1 performs them, so there is
-    exactly one place where the machine changes.
+    exactly one place where cleanup changes are applied.
 
     Every provider entry point is called through Invoke-WaProviderStage, which isolates
     failures: a provider that throws is recorded as degraded and the run continues.
@@ -34,8 +35,12 @@ function Register-WaProvider {
 
     .PARAMETER ExternalDependency
         Name of a third-party tool the provider needs. Providers with an external
-        dependency additionally require Safety.AllowExternalTools in configuration; the
-        toolkit never downloads or installs the dependency itself.
+        dependency additionally require Safety.AllowExternalTools in configuration.
+        Czkawka can download its verified CLI on first use when AutoDownload is enabled.
+
+    .PARAMETER UsesDeepScanPaths
+        The provider scans the directories named with -DeepScanPath. The cleanup flow
+        says so when such a provider does not run, because the user asked for it by name.
 
     .EXAMPLE
         Register-WaProvider -Name 'Dev.Node' -Title 'Node.js package managers' `
@@ -59,6 +64,7 @@ function Register-WaProvider {
         [string]$ExternalDependency = '',
         [string]$Reference = '',
         [bool]$AdvisoryOnly = $false,
+        [bool]$UsesDeepScanPaths = $false,
         [int]$Order = 100
     )
 
@@ -81,6 +87,7 @@ function Register-WaProvider {
         ExternalDependency   = $ExternalDependency
         Reference            = $Reference
         AdvisoryOnly         = $AdvisoryOnly
+        UsesDeepScanPaths    = $UsesDeepScanPaths
         Order                = $Order
 
         TestAvailable        = $TestAvailable
@@ -140,7 +147,7 @@ function Get-WaActiveProvider {
         if ($provider.ExternalDependency -and -not $config.AllowExternalTools) {
             $inactive.Add([pscustomobject]@{
                 Name   = $provider.Name
-                Reason = ("Requires the external tool '{0}'. Set Safety.AllowExternalTools to true and install it yourself to enable this provider; the toolkit never installs it." -f $provider.ExternalDependency)
+                Reason = ("Requires the external tool '{0}'. Set Safety.AllowExternalTools to true to enable this provider. Czkawka downloads its verified dependency on first use when needed." -f $provider.ExternalDependency)
             })
             continue
         }

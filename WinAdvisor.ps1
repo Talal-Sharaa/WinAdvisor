@@ -32,8 +32,8 @@
     Directory to write HTML/JSON reports to. Defaults to Data/Reports.
 
 .PARAMETER DeepScanPath
-    Explicit directories to scan recursively. Deep recursion is never implied by
-    configuration alone; supplying this parameter is the authorisation.
+    Explicit directories to scan recursively. These override Czkawka's default Downloads,
+    Desktop, Documents, Pictures, Videos and Music folders.
 
 .PARAMETER IncludeProvider
     Limit analysis to the named providers.

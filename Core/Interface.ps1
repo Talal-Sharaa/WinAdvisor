@@ -264,6 +264,36 @@ function Show-WaProviderStatus {
     }
 }
 
+function Show-WaDeepScanGap {
+    <#
+    .SYNOPSIS
+        Names each -DeepScanPath scanner that did not run, and why.
+
+    .DESCRIPTION
+        The full provider status lives in System analysis and the report. The cleanup flow
+        shows only this part of it: a scan the user asked for by name that quietly did not
+        happen reads as "nothing found", which is a different claim.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Analysis)
+
+    $paths = @($Session.Config.DeepScanPaths)
+    if ($paths.Count -eq 0) { return }
+    $missed = @($Analysis.ProviderStatus | Where-Object {
+        $provider = Get-WaProvider -Name $_.Name
+        -not $_.Available -and $null -ne $provider -and $provider.UsesDeepScanPaths
+    })
+    if ($missed.Count -eq 0) { return }
+
+    Write-WaHeading 'Deep scan not run'
+    foreach ($status in $missed) {
+        Write-Host ('    {0} did not scan {1}.' -f $status.Name, ($paths -join ', ')) -ForegroundColor Yellow
+        foreach ($message in @($status.Messages)) {
+            Write-Host ('      {0}' -f $message) -ForegroundColor DarkGray
+        }
+    }
+}
+
 function Show-WaStorageAnalysis {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Session, [Parameter(Mandatory)]$Analysis, [switch]$Deep)
@@ -585,6 +615,12 @@ function Invoke-WaPerItemApproval {
 
         if ($OnlyUnapproved -and $null -ne $action.Approval) { continue }
 
+        # Czkawka results are chosen item by item on their own screen, then approved as a list.
+        if (Test-WaCzkawkaReviewAction -Action $action) {
+            if (Invoke-WaCzkawkaSelection -Session $Session -Plan $Plan -Action $action) { $approvedAny = $true }
+            continue
+        }
+
         if ($recommendation.Risk -eq 'MANUAL-ONLY') {
             Show-WaRecommendationDetail -Recommendation $recommendation
             Write-Host ''
@@ -603,7 +639,7 @@ function Invoke-WaPerItemApproval {
 
         Write-Host ''
         if ($recommendation.Risk -eq 'HIGH') {
-            Write-Host '  This is a HIGH-risk change to persistent Windows configuration.' -ForegroundColor Red
+            Write-Host '  This is a HIGH-risk change. Review the consequence and exact target above.' -ForegroundColor Red
             Write-Host '  Type the word YES in full to approve it. Anything else declines.' -ForegroundColor Red
             $answer = (Read-Host '  Approve?').Trim()
             $decision = if ($answer -ceq 'YES') { 'Approved' } else { 'Declined' }
@@ -870,8 +906,13 @@ function Show-WaResults {
             ([string]$result.Status).PadRight(20),
             $result.Summary,
             $(if ($null -ne $result.BytesReclaimed) { '  (' + (Format-WaBytes $result.BytesReclaimed) + ')' } else { '' })) -ForegroundColor $colour
-        foreach ($message in @($result.Messages)) {
+        # One action can carry a line per deleted file; the report keeps all of them.
+        $messages = @($result.Messages)
+        foreach ($message in @($messages | Select-Object -First 12)) {
             Write-Host ('        {0}' -f $message) -ForegroundColor DarkGray
+        }
+        if ($messages.Count -gt 12) {
+            Write-Host ('        ... and {0} more. The report lists every one.' -f ($messages.Count - 12)) -ForegroundColor DarkGray
         }
         if ($result.Error) { Write-Host ('        {0}' -f $result.Error) -ForegroundColor Red }
     }
@@ -907,7 +948,7 @@ function Show-WaSettings {
     Write-WaField 'Minimum cache age'    ('{0} days' -f $config.MinimumCacheAgeDays)
     Write-WaField 'Large file threshold' (Format-WaBytes $config.LargeFileThresholdBytes)
     Write-WaField 'Scan budget'          ('{0} entries or {1}s per directory' -f $config.MaxEntriesPerRoot, $config.MaxScanSecondsPerRoot)
-    Write-WaField 'Deep scan paths'      $(if (@($config.DeepScanPaths).Count -gt 0) { @($config.DeepScanPaths) -join ', ' } else { 'none (deep scanning is never implicit)' })
+    Write-WaField 'Deep scan paths'      $(if (@($config.DeepScanPaths).Count -gt 0) { @($config.DeepScanPaths) -join ', ' } else { 'none (Czkawka uses its default personal folders)' })
     Write-WaField 'Excluded paths'       $(if (@($config.ExcludedPaths).Count -gt 0) { @($config.ExcludedPaths) -join ', ' } else { 'none' })
     Write-Host ''
     Write-WaField 'Batch approval up to' $config.MaximumAutoApprovableRisk

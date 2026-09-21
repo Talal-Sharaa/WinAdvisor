@@ -96,6 +96,10 @@ function Get-WaBasePaths {
         System          = [Environment]::GetFolderPath('System')
         SystemDrive     = [IO.Path]::GetPathRoot($windows)
         Documents       = [Environment]::GetFolderPath('MyDocuments')
+        Desktop         = [Environment]::GetFolderPath('DesktopDirectory')
+        Pictures        = [Environment]::GetFolderPath('MyPictures')
+        Videos          = [Environment]::GetFolderPath('MyVideos')
+        Music           = [Environment]::GetFolderPath('MyMusic')
         Downloads       = (Join-Path $userProfile 'Downloads')
         Temp            = ([IO.Path]::GetTempPath()).TrimEnd('\')
     }

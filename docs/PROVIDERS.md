@@ -277,20 +277,70 @@ or the virtual machine someone's job depends on, and size does not distinguish t
 Only looks where told: without `-DeepScanPath` it examines the top level of the user profile
 and says so.
 
-### `External.Czkawka` — opt-in, report only
+### `External.Czkawka` — default scanning, reviewed deletion
 
-Duplicate detection delegated to Czkawka (MIT), which does size-then-hash grouping properly
-and far faster than PowerShell could.
+Enabled by default with `Safety.AllowExternalTools` and Czkawka CLI **12.0.2**.
+Without `DeepScanPaths`, scans the configured `DefaultScanPaths`: Downloads, Desktop,
+Documents, Pictures, Videos and Music. Explicit paths replace those defaults. A missing,
+protected or linked folder is skipped and reported, and the remaining folders are still
+scanned. Explicit paths never fall back to the defaults, so scope can only shrink; when no
+folder is left, the provider does not run and the cleanup flow says why.
+Resolve the executable via `ExecutablePath`, the local `Tools/Czkawka` installation,
+or `ExecutableName` on PATH. When missing, `AutoDownload` (true by default) downloads the
+pinned Windows release into `Tools/Czkawka`, verifies its SHA-256, then verifies its version.
+This also happens in analysis and DryRun; scan targets remain untouched in inspection modes.
+Downloads require external tools to be enabled and valid scan folders. Both the provider
+and automatic download are enabled by default; `Providers.Disabled` or
+`Safety.AllowExternalTools: false` disables Czkawka.
+Set `AutoDownload` false for offline use. `Scripts/Install-Czkawka.ps1` uses the same
+installer for manual setup/repair. Invalid custom paths and incompatible installed versions
+are reported without replacement. Network and checksum failures prevent the scan.
 
-Three gates, all required: the provider enabled (off by default),
-`Safety.AllowExternalTools` true (off by default), and `czkawka_cli` already on PATH.
-WinAdvisor never downloads or installs it.
+`ScanTypes` selects `duplicates`, `empty-folders`, `empty-files`, `temporary`, and
+`similar-images`, and `broken-files`. All selected roots are scanned together. Catalog entries request JSON,
+disable caches and suppress the special exit code for finding matches. Reports remain
+under `Data/Reports/Czkawka/<SessionId>`; unsuccessful scans propose no deletions.
 
-**No deletion argument exists in the command catalog**, so no configuration turns this into
-a deleting provider. A test asserts it. Duplicate resolution on personal data is a decision
-only the file's owner can make: the "duplicate" may be the only backup, or a copy an
-application currently has open.
+Each eligible target becomes one `CzkawkaDelete` operation with a HIGH risk floor. Each
+scan type is one plan action holding all of its candidates, with nothing selected. The
+review screen (`Core/CzkawkaReview.ps1`) shows the candidates in pages. You pick items there
+with Czkawka's own bulk selection rules, taken from Krokiet 12.0.2:
 
-Czkawka's output format belongs to Czkawka and can change between versions, so the summary
-is extracted conservatively and the full report is left on disk for you to read rather than
-being reinterpreted.
+| Scan type | Rules offered |
+|---|---|
+| Duplicates | select all except longest path, shortest path, biggest size, smallest size, newest or oldest; invert selection in group; invert selection; deselect all; select all; custom |
+| Similar images | as duplicates, plus select all except biggest resolution or smallest resolution |
+| Empty folders, empty files, temporary files, broken files | invert selection; deselect all; select all; custom |
+
+`t 3, 7-12` toggles single items. "Select all except X" spares the first file in a group
+on a tie, and path length compares the folder before the file name. "Invert selection in
+group" flips only groups that already have a selection. Custom selection matches a
+wildcard against the full path, ignoring case, and never selects the last unselected file
+in a group. After you finish and type YES, the action is rebuilt with exactly the selected
+operations and approved individually. It can never be batch-approved.
+
+Every member of a duplicate or similar-image group is a candidate, and no copy is kept
+automatically. A selection that covers a whole group cannot be confirmed. When a selection
+is confirmed, the unselected members of each affected group are reserved for the session.
+A group member is deleted only when a reserved member of the same group is present and
+unchanged, and for duplicates still byte-identical. A path found by several scan types
+belongs to the first one. A group left with one member is dropped. Similarity is not
+equality: compare the images in a group before selecting. Recent temporary files are
+filtered using the normal minimum temp age and both creation and modification time.
+
+Broken files use Czkawka's default PDF, audio, image, archive, font and markup validators.
+The reported validation error appears under the file on the review screen. Validation failure does
+not imply that the file is unrecoverable. Optional FFmpeg/ffprobe video checks are disabled.
+Like every file candidate, a repaired or otherwise changed file is skipped at execution.
+
+The core executor verifies the session manifest, current scope, metadata and SHA-256
+again. It checks and holds the kept file against writes/deletion while removing the
+approved target. Empty directory trees must have the same reviewed directory membership
+and contain no files, including hidden files. Removal is nonrecursive, deepest first.
+
+Personal folders are permitted only for this operation; ordinary cache protections remain
+unchanged. OS paths, protected extensions, repositories, excluded paths, links and offline
+placeholders remain blocked. Scan roots are never deleted. All deletions bypass the
+Recycle Bin and are irreversible. DryRun/Plan/Analyze never delete scan targets.
+
+See the [quick-start commands](../README.md#czkawka-1202).

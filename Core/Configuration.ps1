@@ -229,7 +229,7 @@ function Get-WaConfiguration {
         # Safety
         CreateRestorePointBeforeHighRisk = [bool](Get-WaSectionValue $safety 'CreateRestorePointBeforeHighRisk' $true)
         RequireSupportedWindows          = [bool](Get-WaSectionValue $safety 'RequireSupportedWindowsForExecution' $true)
-        AllowExternalTools               = [bool](Get-WaSectionValue $safety 'AllowExternalTools' $false)
+        AllowExternalTools               = [bool](Get-WaSectionValue $safety 'AllowExternalTools' $true)
         AllowDismAnalyze                 = [bool](Get-WaSectionValue $safety 'AllowDismAnalyze' $true)
 
         # Reporting

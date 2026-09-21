@@ -27,7 +27,7 @@ native or vendor mechanism exists and is better tested than anything we would wr
 | WSL disk reclamation | Advise only | no supported in-place shrink exists |
 | Gradle / Maven / Cargo / editor caches | Implement | no official CLI exists; file manifests |
 | Browser caches | Implement | documented profile layout; cache paths only |
-| Duplicate detection | Delegate, optional | Czkawka CLI, report only |
+| Duplicate / empty / temporary / similar-image / broken-file detection | Delegate, enabled by default | Czkawka 12.0.2 scans personal folders; WinAdvisor executes individually reviewed deletions |
 | Application uninstall | Out of scope | Bulk Crap Uninstaller does this properly |
 | Registry "cleaning" | Never | no evidence it helps; real potential to harm |
 | Service disabling | Never by default | see below |
@@ -116,19 +116,18 @@ GPL-3.0-only; WinAdvisor does not use it.)
 plus empty-folder, broken-symlink and similar-image detection. Written in Rust and much
 faster than anything equivalent in PowerShell.
 
-**Decision: delegate, optionally, report only.** This is the clearest case in the project
-where delegating beats reimplementing. A correct duplicate finder needs careful hashing and
-grouping; writing a slower, less correct one in PowerShell would help nobody.
+**Decision: delegate scanning, then review exact deletions.** The versioned integration
+supports duplicates, empty folders, empty files, temporary files, similar images and broken files.
+It enables external tools by default and scans the six standard personal folders unless
+explicit folders replace them. It requires CLI 12.0.2. Missing binaries
+are downloaded automatically from the pinned release and SHA-256 verified before use.
+An offline opt-out and a standalone installer are available.
 
-It is gated three ways, all of which must pass: the provider is disabled by default,
-`Safety.AllowExternalTools` is false by default, and `czkawka_cli` must already be on PATH.
-WinAdvisor never downloads or installs it.
-
-Crucially, **no deletion argument exists in the command catalog**. Czkawka is invoked with
-`dup --directories … --search-method hash --file-to-save …` and nothing else. Duplicate
-resolution on personal data is a decision only the file's owner can make: the "duplicate"
-may be the only backup, or a copy an application currently has open. A test asserts that no
-deletion flag appears in any Czkawka catalog entry.
+No deletion argument exists in the command catalog. Czkawka supplies JSON reports and
+WinAdvisor converts validated candidates into HIGH-risk operations that require individual
+approval. Retained paths are shown and revalidated. Similar-image matches can contain
+different content, so visual review remains the user's decision. See
+[the provider contract](PROVIDERS.md#externalczkawka--default-scanning-reviewed-deletion).
 
 ### Bulk Crap Uninstaller
 

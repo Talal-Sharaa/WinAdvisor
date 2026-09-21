@@ -54,6 +54,7 @@ WinAdvisor/
 │   ├── Verification.ps1            before/after measurement
 │   ├── Reporting.ps1               self-contained HTML + JSON reports
 │   ├── Interface.ps1               console rendering and the menu
+│   ├── CzkawkaReview.ps1           review screen: choosing which Czkawka results to delete
 │   └── Entry.ps1                   Start-WinAdvisor and the mode flows
 │
 ├── Providers/                      one file per provider, auto-discovered

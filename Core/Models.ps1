@@ -27,6 +27,7 @@ $script:WaReversibilityClasses = @('Reversible', 'PartiallyReversible', 'Regener
 # inventing a new way to change the machine.
 $script:WaOperationKinds = @(
     'FileDelete'          # delete a reviewed manifest of specific files
+    'CzkawkaDelete'       # individually reviewed Czkawka file or empty directory tree
     'NativeCommand'       # run one catalog entry with catalog-controlled arguments
     'RegistryValueSet'    # write a single named registry value, with a rollback record
     'ServiceStartupSet'   # change one service start mode, with a rollback record
